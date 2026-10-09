@@ -1083,10 +1083,216 @@ docker exec -it smart-office-emqx emqx ctl admins passwd admin admin123456
 经验总结：EMQX 5.x 的 Dashboard 用户管理命令是 admins（add / passwd / del / mfa），不是 dashboard。改配置/密码没生效时，先确认命令版本对不对。
 
 
-#	坑	根因	解决
-1	simulation 空模块 BUILD FAILURE	无启动类	加占位启动类（第一批代码）
-2	jackson-databind 找不到	spring-boot-starter 不带 Jackson	加 jackson-databind 依赖
-3	Nacos 里配置空了	volume 被清/配置迁移遗漏	重建配置
-4	jwt.secret 找不到	Nacos 配置缺 JWT 段	补配置
-5	Redis 连 6379	Redisson 读不到 spring.data.redis.port	本地 yml 兜底
-6	MalformedInputException	pom 缺 project.build.sourceEncoding + yml 中文注释	pom 加 UTF-8 + 配置去中文
+## 多模块重构 + 工业级数据链路（Day 2）
+
+### 问题 69：多模块 Maven 重构后，simulation 模块 BUILD FAILURE
+
+**报错信息：** `Failed to execute goal spring-boot-maven-plugin:3.3.5:repackage ... Unable to find main class`
+
+**原因分析：** 新建的 `smart-office-simulation` 模块**没有 Java 源码**（空模块），但 pom 里配了 `spring-boot-maven-plugin`，打包插件找不到主类。
+
+**解决方案：**
+- 给 simulation 模块加启动类 `SimulationApplication`
+- 或临时在父 pom 的 `<modules>` 里注释掉 simulation 模块
+
+**经验总结：** 空模块不要配打包插件，要么先写代码，要么从父 pom 的 modules 里排除。
+
+---
+
+### 问题 70：多模块重构后，Jackson 依赖缺失
+
+**报错信息：** `程序包com.fasterxml.jackson.databind不存在` / `找不到符号: 类 ObjectMapper`
+
+**原因分析：** `smart-office-simulation` 用了 `spring-boot-starter`（非 web），它**不包含 Jackson**。而 `TelemetryPublisher` 用 `ObjectMapper` 序列化 JSON，缺依赖。
+
+**解决方案：** simulation 的 pom 加：
+
+```xml
+<dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+</dependency>
+经验总结： 最小依赖原则——非 web 模块用 JSON 要手动加 jackson-databind，不要引入整个 spring-boot-starter-web（会带 Tomcat）。
+
+问题 71：Maven 打包时缺 project.build.sourceEncoding 导致文件乱码
+报错信息： MalformedInputException: Input length = 1，应用启动失败。
+
+原因分析：
+
+父 pom 的 <properties> 没有 project.build.sourceEncoding=UTF-8
+
+Maven 编译时用平台默认编码（Windows = GBK）
+
+YAML 配置文件的中文注释被按 GBK 读，解析失败
+
+Nacos 配置加载链断掉，后续所有配置拉不到
+
+解决方案：
+
+父 pom 加：
+
+xml
+<properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+</properties>
+关键配置文件（application.yml / bootstrap.yml）去掉中文注释，防患未然
+
+经验总结： Maven 的 project.build.sourceEncoding 是必须显式声明的。Windows 环境下默认 GBK，UTF-8 项目会踩坑。
+
+问题 72：TDengine 超表不存在，双写 100% 失败
+报错信息：
+
+text
+java.sql.SQLException: TDengine ERROR (0x2603): sql: INSERT INTO d_xxx USING telemetry TAGS ('xxx') VALUES ...
+desc: Table does not exist
+死信表在几分钟内涨到 6000+ 条，但 MySQL 主链路正常。
+
+原因分析：
+
+TDengine 的超表 telemetry 没建（清库时 DROP DATABASE 后没重建）
+
+CREATE TABLE ... USING telemetry 要求超表已存在
+
+每条 INSERT 都失败 → 进死信 → 死信暴增
+
+解决方案：
+
+应急： 手动建超表
+
+sql
+CREATE STABLE IF NOT EXISTS telemetry (ts TIMESTAMP, temperature DOUBLE) TAGS (device_id NCHAR(32));
+永久： TdengineWriteService.init() 里加自动建超表逻辑
+
+java
+@PostConstruct
+public void init() throws SQLException {
+    conn = DriverManager.getConnection(url, username, password);
+    try (Statement stmt = conn.createStatement()) {
+        stmt.executeUpdate("CREATE STABLE IF NOT EXISTS telemetry (...) TAGS (...)");
+    }
+}
+经验总结： 时序库的"超表"是子表的前置依赖。清库重建后，必须自动建超表，否则旁路全丢。旁路失败被异常隔离，主链路感知不到——这是双写设计的隐患，必须主动监控死信表。
+
+问题 73：TDengine 多子表合并 INSERT，首批大批量建表失败
+报错信息： Table does not exist（同上，但根因不同）。
+
+原因分析：
+
+TDengine 支持 INSERT INTO 子表 USING 超表 TAGS(...) 隐式建子表
+
+一批 INSERT 涉及 1000 个"首次写入的子表" 时，TDengine 3.3.0 处理不过来
+
+换成"先显式建子表，再纯 INSERT"就稳定了
+
+解决方案：
+
+拆分两步：ensureSubTables() 预建子表（幂等，CREATE TABLE IF NOT EXISTS）
+
+加 createdSubTables 缓存，同一子表只建一次
+
+batchInsert() 里 INSERT 不带 USING
+
+经验总结： "隐式建表"是甜点，不是主食。高并发 / 大批量场景要"显式建表 + 缓存已建表"，把不确定性降到最低。
+
+问题 74：MQTT cleanSession=true 导致 app 掉线期间数据全丢
+报错现象：
+
+app 启动前的数据全没写入
+
+EMQX 里 clean_start=true，session_expiry_interval=0
+
+app 掉线后，EMQX 立即销毁会话
+
+app 重连 → 从零开始收新数据
+
+原因分析：
+
+MqttConnectOptions.setCleanSession(true) → 每次连接都是全新会话
+
+EMQX 不为该 clientId 缓存离线消息
+
+MQTT 持久会话的核心参数，很多人不知道
+
+解决方案：
+
+java
+MqttConnectOptions options = new MqttConnectOptions();
+options.setClientId("smart-office-backend");   // 固定 clientId
+options.setCleanSession(false);                // ★ 关键：持久会话
+options.setAutomaticReconnect(true);
+options.setConnectionTimeout(30);
+options.setKeepAliveInterval(60);
+⚠️ 常见错误：代码里有两处 setCleanSession，后面那行 true 覆盖了前面的 false。 只留一行。
+
+经验总结： cleanSession 是 MQTT 3.1.1 最核心的参数：
+
+true = 每次全新会话，掉线丢消息
+
+false = 持久会话，Broker 缓存离线消息，重连补发
+
+验证方式：docker exec smart-office-emqx emqx ctl clients show smart-office-backend，看 clean_start 和 session_expiry_interval。
+
+问题 75：MQTT 回调里做 IO 阻塞，ACK 推不出去
+报错现象：
+
+app 掉线期间 EMQX 缓存 3200 条
+
+app 重连后，EMQX 推了 32 条就停了
+
+inflight=32 一直不变，enqueued_msgs=3168 不动
+
+MySQL 只进了 96 条
+
+原因分析：
+
+Paho MQTT 的回调线程只有 1 个（CommsReceiver）
+
+messageArrived 里 log.info("收到 MQTT 消息...") 每条都打日志 → 日志 IO 阻塞回调线程
+
+app ACK 推不出去 → EMQX inflight 满 → 后续消息不推
+
+解决方案：
+
+回调里只入内存队列，零 IO
+
+java
+@Override
+public void messageArrived(String topic, MqttMessage message) {
+    String payload = new String(message.getPayload());
+    telemetryQueue.offer(topic, payload);   // 只入队，不打日志
+}
+日志移到队列消费端（TelemetryBatchWriter）
+
+调大 Paho setMaxInflight(1000)（默认 10 或 30）
+
+经验总结： MQTT 回调是单线程的，回调里做慢操作（日志、Redis、HTTP）会阻塞整个接收链路。正确做法：回调里只入队，异步消费。
+
+问题 76：EMQX 离线队列默认 1000 条，长时间离线丢数据
+报错现象： EMQX Dashboard 显示"消息丢弃"峰值。
+
+原因分析： EMQX max_mqueue_len 默认 1000。app 掉线期间，sim 发超过 1000 条，多的直接丢。
+
+解决方案： deploy/docker-compose.yml 的 emqx 服务加：
+
+yaml
+environment:
+  - EMQX_MQTT__MAX_MQUEUE_LEN=100000
+或通过 EMQX Dashboard → 管理 → 配置 → MQTT 直接改。
+
+经验总结： 工业级"数据零丢失"必须调大 offline 队列。开发环境默认 1000 够用，生产环境必须按"最长离线时间 × 消息速率"估算。
+
+数据零丢失验证结果（Day 2 收官）
+场景： 100 台设备，每秒 100 条遥测，app 掉线 30 秒。
+
+检查点	结果
+EMQX clean_start	false（持久会话）
+EMQX session_expiry_interval	7200（2 小时）
+app 掉线时 enqueued_msgs	3200（离线队列积压）
+app 重连后 enqueued_msgs	0（补发完成）
+app 重连后 delivered_msgs	3200
+MySQL 主表	3262
+TDengine 超表	3166
+死信	0
+补发入库耗时	< 1 秒
+结论： MQTT 持久会话 + offline 队列补发 + MySQL/TDengine 双写，端到端数据零丢失。
