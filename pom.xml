@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<!-- 继承 Spring Boot 父级（版本管理） -->
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>3.3.5</version>
+		<relativePath/>
+	</parent>
+
+	<!-- 本工程坐标 -->
+	<groupId>com.example</groupId>
+	<artifactId>smart-office</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>   <!-- ★ 关键：父 pom 打包方式 -->
+	<name>smart-office</name>
+	<description>Smart Office Platform - Parent</description>
+
+	<!-- 声明子模块 -->
+	<modules>
+		<module>smart-office-app</module>
+		<module>smart-office-simulation</module>
+	</modules>
+
+	<properties>
+		<java.version>17</java.version>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<spring-cloud.version>2023.0.3</spring-cloud.version>
+		<spring-cloud-alibaba.version>2023.0.1.2</spring-cloud-alibaba.version>
+		<!-- 统一版本管理，子模块引用时不用写 version -->
+		<taos-jdbc.version>3.3.0</taos-jdbc.version>
+		<mybatis-plus.version>3.5.5</mybatis-plus.version>
+		<paho-mqtt.version>1.2.5</paho-mqtt.version>
+		<redisson.version>3.27.2</redisson.version>
+		<jjwt.version>0.11.5</jjwt.version>
+	</properties>
+
+
+	<!-- 版本管理：只声明版本，不引入依赖 -->
+	<dependencyManagement>
+		<dependencies>
+			<!-- Spring Cloud BOM -->
+			<dependency>
+				<groupId>org.springframework.cloud</groupId>
+				<artifactId>spring-cloud-dependencies</artifactId>
+				<version>${spring-cloud.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<!-- Spring Cloud Alibaba BOM -->
+			<dependency>
+				<groupId>com.alibaba.cloud</groupId>
+				<artifactId>spring-cloud-alibaba-dependencies</artifactId>
+				<version>${spring-cloud-alibaba.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+
+			<!-- 内部模块互相引用的版本 -->
+			<dependency>
+				<groupId>com.example</groupId>
+				<artifactId>smart-office-app</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+
+			<!-- 第三方版本统一管理 -->
+			<dependency>
+				<groupId>com.taosdata.jdbc</groupId>
+				<artifactId>taos-jdbcdriver</artifactId>
+				<version>${taos-jdbc.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.baomidou</groupId>
+				<artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+				<version>${mybatis-plus.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.eclipse.paho</groupId>
+				<artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+				<version>${paho-mqtt.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.redisson</groupId>
+				<artifactId>redisson-spring-boot-starter</artifactId>
+				<version>${redisson.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>io.jsonwebtoken</groupId>
+				<artifactId>jjwt-api</artifactId>
+				<version>${jjwt.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>io.jsonwebtoken</groupId>
+				<artifactId>jjwt-impl</artifactId>
+				<version>${jjwt.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>io.jsonwebtoken</groupId>
+				<artifactId>jjwt-jackson</artifactId>
+				<version>${jjwt.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<!-- 所有子模块共用的依赖（比如 lombok、test）放这里 -->
+	<dependencies>
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<optional>true</optional>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+</project>

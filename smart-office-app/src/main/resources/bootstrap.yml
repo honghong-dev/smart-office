@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: smart-office
+  profiles:
+    active: docker
+  cloud:
+    nacos:
+      config:
+        server-addr: localhost:8848
+        file-extension: yml
+        namespace: public
+        group: DEFAULT_GROUP

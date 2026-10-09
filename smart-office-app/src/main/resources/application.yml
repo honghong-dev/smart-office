@@ -1,0 +1,56 @@
+spring:
+  application:
+    name: smart-office
+  profiles:
+    active: docker
+  cloud:
+    nacos:
+      config:
+        server-addr: localhost:8848
+        file-extension: yml
+        namespace: public
+        group: DEFAULT_GROUP
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3307/smart_office?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&rewriteBatchedStatements=true
+    username: root
+    password: 123456
+  data:
+    redis:
+      host: localhost
+      port: 6380
+      password: 123456
+      database: 0
+      timeout: 3000ms
+  redis:
+    host: localhost
+    port: 6380
+    password: 123456
+  rabbitmq:
+    host: localhost
+    port: 5673
+    username: admin
+    password: 123456
+    virtual-host: /
+jwt:
+  secret: smart-office-jwt-secret-key-2026-please-change-in-production-32bytes-min
+  expiration: 86400000
+mqtt:
+  broker: tcp://localhost:1884
+  client-id: smart-office-backend
+  username: ""
+  password: ""
+  qos: 1
+  topic: factory/device/+/telemetry
+tdengine:
+  url: jdbc:TAOS-RS://localhost:6041/smart_office
+  username: root
+  password: taosdata
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.example.smart_office.entity
+  configuration:
+    map-underscore-to-camel-case: true
+logging:
+  level:
+    root: INFO

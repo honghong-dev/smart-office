@@ -1,0 +1,28 @@
+﻿# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.iml
+
+# IDE
+.idea/
+*.ipr
+*.iws
+.vscode/
+
+# 日志
+*.log
+logs/
+
+# 数据
+data/
+deploy/data/
+
+# 备份/敏感
+*.bak
+.env
+
+# 系统
+.DS_Store
+Thumbs.db

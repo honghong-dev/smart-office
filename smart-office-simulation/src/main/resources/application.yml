@@ -1,0 +1,53 @@
+# ============================================================
+# Smart-Office 设备仿真器配置
+# ============================================================
+
+server:
+  port: 0   # 随机端口（仿真器无 HTTP 端点，这个值无实际意义，只是占位）
+
+spring:
+  application:
+    name: smart-office-simulation
+
+# ============================================================
+# 仿真参数（后续调度器用，本批只做占位）
+# ============================================================
+simulation:
+  # 基础 tick 间隔（毫秒）：真实每多少毫秒 tick 一次
+  tick-interval-ms: 1000
+
+  # 时间倍率：1 = 真实时间；60 = 1 真实秒 = 60 仿真秒
+  # 演示时可调到 60，1 分钟看完设备的"1 小时"演化
+  time-scale: 1
+
+  # 设备数量上限（防止误配）
+  max-devices: 2000
+
+  # ★ 新增：设备生成配置
+  device-generation:
+    line-count: 2          # 2条产线
+    count-per-type: 10       # 每条产线每种设备 10 台
+    types: [PRESS, WELD, PAINT, ASSEMBLY, CONVEYOR]
+
+# ============================================================
+# MQTT 配置（下一批使用，本批只做占位）
+# ============================================================
+mqtt:
+  broker-url: tcp://localhost:1884   # 宿主机映射的 EMQX 端口
+  client-id: smart-office-simulation
+  username: ""
+  password: ""
+  qos: 1
+  # Topic 规则（与主工程 MqttSubscriber 的订阅规则一致）
+  topic-template: factory/device/{deviceId}/telemetry
+
+# ============================================================
+# 日志
+# ============================================================
+logging:
+  level:
+    root: INFO
+#    com.example.smart_office.simulation: DEBUG
+    com.example.smart_office.simulation: INFO    # ← DEBUG 改成 INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

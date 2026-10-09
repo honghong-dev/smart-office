@@ -1,0 +1,36 @@
+#  告警规则
+groups:
+  - name: smart-office-alerts
+    rules:
+      - alert: HighHttpErrorRate
+        expr: |
+          sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          /
+          sum(rate(http_server_requests_seconds_count[5m])) > 0.01
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx 错误率超过 1%"
+          description: "当前错误率 {{ $value | humanizePercentage }}"
+
+      - alert: HighJvmMemoryUsage
+        expr: |
+          sum(jvm_memory_used_bytes{area="heap"})
+          /
+          sum(jvm_memory_max_bytes{area="heap"}) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM 堆内存使用率超过 85%"
+          description: "当前使用率 {{ $value | humanizePercentage }}"
+
+      - alert: ServiceDown
+        expr: up{job="smart-office"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Smart-Office 服务不可用"
+          description: "服务已下线超过 1 分钟"

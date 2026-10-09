@@ -1,0 +1,159 @@
+# Docker Compose 编排文件
+# 用途：一键启动 Smart-Office 全部服务
+# 位置：smart-office/deploy/docker-compose.yml
+# 运行：cd deploy && docker compose up -d
+
+services:
+  tdengine:
+    image: tdengine/tdengine:3.3.0.0
+    container_name: tdengine
+    hostname: tdengine
+    ports:
+      - "6030:6030"
+      - "6041:6041"
+    environment:
+      TAOS_FQDN: tdengine
+    volumes:
+      - ./data/tdengine:/var/lib/taos
+    restart: unless-stopped
+
+  nacos:
+    image: nacos/nacos-server:v2.3.2
+    container_name: smart-office-nacos
+    environment:
+      - MODE=standalone
+      - SPRING_DATASOURCE_PLATFORM=mysql
+      - MYSQL_SERVICE_HOST=mysql
+      - MYSQL_SERVICE_DB_NAME=nacos_config
+      - MYSQL_SERVICE_USER=root
+      - MYSQL_SERVICE_PASSWORD=123456
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+      - "9849:9849"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: always
+
+  mysql:
+    image: mysql:8.0
+    container_name: smart-office-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: smart_office
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql:/docker-entrypoint-initdb.d        # ← 改：从 docs/sql 改为 ./sql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  redis:
+    image: redis:latest
+    container_name: smart-office-redis
+    command: redis-server --requirepass 123456
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: smart-office-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: 123456
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    restart: always
+
+  emqx:
+    image: emqx/emqx:latest
+    container_name: smart-office-emqx
+    environment:
+      - EMQX_MQTT__MAX_MQUEUE_LEN=100000    # ★ 新增：离线队列 10 万条
+    ports:
+      - "1884:1883"
+      - "18084:18083"
+      - "8084:8083"
+    volumes:
+      - emqx-data:/opt/emqx/data
+    restart: always
+
+  smart-office:
+    # ← 改：从 build: . 改为指定 context 和 dockerfile
+    build:
+      context: ../smart-office-app
+      dockerfile: Dockerfile
+    container_name: smart-office-app
+    profiles:
+      - prod
+    ports:
+      - "8081:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - MQTT_HOST=emqx
+      - MQTT_PORT=1883
+      - SPRING_CLOUD_NACOS_CONFIG_SERVER_ADDR=nacos:8848
+      - TDENGINE_HOST=tdengine
+      - TDENGINE_PORT=6041
+    depends_on:
+      nacos:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      emqx:
+        condition: service_started
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: smart-office-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      # ← 改：prometheus 配置文件移到 prometheus/ 子目录
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus-alert.yml:/etc/prometheus/prometheus-alert.yml
+      - prometheus-data:/prometheus
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: smart-office-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: always
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  emqx-data:
+  prometheus-data:
+  grafana-data:
