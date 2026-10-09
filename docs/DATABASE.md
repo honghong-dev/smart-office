@@ -1,4 +1,9 @@
+markdown
 # Smart-Office 数据库设计文档
+
+**文档版本**：v1.5
+**最后更新**：2026-10-09
+**对应代码版本**：Smart-Office v1.5
 
 ## 一、基本信息
 
@@ -7,7 +12,18 @@
 - 排序规则：`utf8mb4_0900_ai_ci`
 - 存储引擎：`InnoDB`
 
-**说明**：另有一个 `nacos_config` 库，用于 Nacos 配置中心，见本文第 7 节。设备遥测数据同时双写 MySQL 和 TDengine，见第 9 节。
+**说明**：另有一个 `nacos_config` 库，用于 Nacos 配置中心，见本文第 7 节。设备遥测数据同时双写 MySQL 和 TDengine，见第 8 节。
+
+## 变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|----------|
+| v1.0 | 2026-09-27 | 用户、审批基础表 |
+| v1.1 | 2026-09-29 | RBAC、device_telemetry |
+| v1.2 | 2026-10-04 | 审计日志、部门表 |
+| v1.3 | 2026-10-05 | Nacos 库说明 |
+| v1.4 | 2026-10-05 | TDengine 时序库设计 |
+| v1.5 | 2026-10-09 | device_telemetry 加 vibration/speed/state；TDengine 超表修正；索引验证 |
 
 ---
 
@@ -165,51 +181,60 @@
 | create_time | DATETIME | 是 | 当前时间 | 创建时间 |
 
 **索引**：
-
 - `idx_operator`（operator_id）
 - `idx_create_time`（create_time）
 
-### 表 10：device_telemetry（设备遥测数据表）
+### 表 10：device_telemetry（设备遥测数据表）★ v1.5 加字段
 
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
-| device_id | VARCHAR(50) | 否 | 无 | 设备 ID |
-| temperature | DECIMAL(5,2) | 否 | 无 | 温度 |
+| device_id | VARCHAR(50) | 否 | 无 | 设备 ID（如 PRESS-01-01） |
+| **device_name** | **VARCHAR(64)** | 是 | 无 | **设备名称（v1.5 新增）** |
+| **state** | **VARCHAR(20)** | 是 | 无 | **设备状态：RUNNING/IDLE/FAULT/MAINTENANCE（v1.5 新增）** |
+| temperature | DECIMAL(5,2) | 否 | 无 | 温度（℃） |
+| **vibration** | **DECIMAL(5,2)** | 是 | 无 | **振动（mm/s）（v1.5 新增）** |
+| **speed** | **INT** | 是 | 无 | **转速（rpm）（v1.5 新增）** |
 | report_time | DATETIME | 是 | 无 | 上报时间（由 MyBatis-Plus 自动填充） |
 
 **索引**：
-
 - `idx_device_time`（device_id + report_time）：按设备 + 时间段查询，防止全表扫描。
 
-### 表 11：mqtt_message_log（MQTT 消息处理日志表）
+**验证（v1.5）**：
+```sql
+EXPLAIN SELECT device_id, temperature FROM device_telemetry 
+WHERE device_id='PRESS-01-01' AND report_time >= '2026-10-09 18:00:00';
+输出：type=range, key=idx_device_time, rows=33 → 走索引。
 
-| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
-|--------|------|----------|--------|------|
-| id | BIGINT | 否 | 自增 | 主键 ID |
-| message_id | VARCHAR(128) | 否 | 无 | 幂等键（deviceId + timestamp） |
-| topic | VARCHAR(255) | 否 | 无 | MQTT 主题 |
-| payload | TEXT | 是 | 无 | 消息原文 |
-| status | VARCHAR(32) | 否 | 无 | 状态（RECEIVED / PROCESSED / FAILED / DEAD） |
-| reason | VARCHAR(255) | 是 | 无 | 失败原因 |
-| created_at | DATETIME | 是 | 当前时间 | 创建时间 |
-| updated_at | DATETIME | 是 | 当前时间 | 更新时间 |
+表 11：mqtt_message_log（MQTT 消息处理日志表 / 死信表）
+字段名	类型	是否为空	默认值	说明
+id	BIGINT	否	自增	主键 ID
+message_id	VARCHAR(128)	否	无	幂等键（topic + nanoTime）
+topic	VARCHAR(255)	否	无	MQTT 主题
+payload	TEXT	是	无	消息原文
+status	VARCHAR(32)	否	无	状态（RECEIVED / PROCESSED / FAILED / DEAD）
+reason	VARCHAR(255)	是	无	失败原因
+created_at	DATETIME	是	当前时间	创建时间
+updated_at	DATETIME	是	当前时间	更新时间
+索引：
 
-**索引**：
+uk_message_id（message_id 唯一）
 
-- `uk_message_id`（message_id 唯一）
-- `idx_status`（status）
-- `idx_created_at`（created_at）
+idx_status（status）
 
----
+idx_created_at（created_at）
 
-## 三、表关系说明
+说明：
 
-### RBAC 关系
+死信 message_id 用 topic + ":" + System.nanoTime() 保证唯一
 
-```text
+DeadLetterService.record() 内部 catch 所有异常，不抛（避免死信记录反而影响主流程）
+
+三、表关系说明
+RBAC 关系
+text
 sys_user ←→ sys_user_role ←→ sys_role ←→ sys_role_permission ←→ sys_permission
-(1) (N) (1) (N) (1)
+(1)        (N)               (1)        (N)               (1)
 sys_user 与 sys_role 通过 sys_user_role 形成多对多关系。
 
 sys_role 与 sys_permission 通过 sys_role_permission 形成多对多关系。
@@ -217,13 +242,13 @@ sys_role 与 sys_permission 通过 sys_role_permission 形成多对多关系。
 数据权限关系
 text
 sys_user → sys_dept
-(N) (1)
+(N)        (1)
 sys_user 与 sys_dept 通过 dept_id 形成多对一关系。
 
 审批流关系
 text
 sys_approval ←→ sys_approval_record
-(1) (N)
+(1)             (N)
 一个审批单可以有多条操作记录（提交、通过、驳回）。
 
 设备遥测与 TDengine 的关系
@@ -234,7 +259,7 @@ MySQL 保留设备遥测全量数据，主链路，告警依赖。
 
 TDengine 存时序数据（超级表 telemetry，按设备建子表），旁路，用于后续时间范围查询、看板、冷热分离。
 
-两边数据一致（压测 5 万条：49802 = 49802）。
+两边数据一致（100 台设备持续压测：100% 一致）。
 
 四、通用字段规范
 所有业务表统一包含以下字段：
@@ -403,11 +428,15 @@ CREATE TABLE sys_audit_log (
     KEY idx_create_time (create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审计日志表';
 
--- 设备遥测数据表
+-- 设备遥测数据表（v1.5 加字段）
 CREATE TABLE device_telemetry (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
-    device_id VARCHAR(50) NOT NULL COMMENT '设备ID',
-    temperature DECIMAL(5,2) NOT NULL COMMENT '温度',
+    device_id VARCHAR(50) NOT NULL COMMENT '设备ID（如 PRESS-01-01）',
+    device_name VARCHAR(64) COMMENT '设备名称',
+    state VARCHAR(20) COMMENT '设备状态：RUNNING/IDLE/FAULT/MAINTENANCE',
+    temperature DECIMAL(5,2) NOT NULL COMMENT '温度（℃）',
+    vibration DECIMAL(5,2) COMMENT '振动（mm/s）',
+    speed INT COMMENT '转速（rpm）',
     report_time DATETIME COMMENT '上报时间（应用层填充）',
     KEY idx_device_time (device_id, report_time) COMMENT '设备+时间索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='设备遥测数据表';
@@ -429,7 +458,7 @@ CREATE TABLE mqtt_message_log (
 七、Nacos 配置数据库（nacos_config）
 Nacos 用独立的数据库 nacos_config 存配置，建表 SQL 见 docs/sql/nacos.sql。
 
-必须用官方完整版，否则会踩坑（见 BUG_LOG 问题 49-53）。
+必须用官方完整版，否则会踩坑（见 BUG_LOG.md 问题 49-53）。
 
 关键表：
 
@@ -445,9 +474,15 @@ users / roles / permissions：Nacos 用户权限
 数据库设计
 sql
 CREATE DATABASE IF NOT EXISTS smart_office
-  KEEP 7              -- 数据保留 7 天，超期自动删除（冷热分离）
+  KEEP 30             -- 数据保留 30 天，超期自动删除（冷热分离）
   DURATION 1          -- 按天分片
   PRECISION 'ms';     -- 毫秒精度
+说明：
+
+KEEP 30：数据自动保留 30 天，超期自动清理——最朴素的冷热分离。
+
+v1.5 之前用 KEEP 7，现在改为 30 天（兼顾存储和数据完整性）。
+
 超级表设计
 sql
 CREATE STABLE IF NOT EXISTS telemetry (
@@ -462,10 +497,25 @@ CREATE STABLE IF NOT EXISTS telemetry (
 
 子表：按设备自动建表（d_{device_id}），USING ... TAGS 幂等创建。
 
-KEEP 7：数据自动保留 7 天，超期自动清理——最朴素的冷热分离。
-
 主键 (ts, tag)：同一设备同一时间戳，后写覆盖前写。压测脚本用 baseTs + i 全局递增，保证唯一。
 
+自动建超表（v1.5 关键）
+清库（DROP DATABASE）后，超表也会被删。app 启动时必须自动建超表。
+
+TdengineWriteService.init() 里：
+
+java
+@PostConstruct
+public void init() throws SQLException {
+    conn = DriverManager.getConnection(url, username, password);
+    try (Statement stmt = conn.createStatement()) {
+        stmt.executeUpdate(
+            "CREATE STABLE IF NOT EXISTS telemetry (" +
+            "  ts TIMESTAMP, temperature DOUBLE" +
+            ") TAGS (device_id NCHAR(32))"
+        );
+    }
+}
 与 MySQL 的双写
 MySQL 主链路：告警、事务依赖，强一致。
 
@@ -473,7 +523,12 @@ TDengine 旁路：时序存储、时间范围查询，最终一致。
 
 异常隔离：主链路失败整批进死信；旁路失败只记死信，不影响主链路。
 
-写入优化：多子表合并 INSERT（一条 SQL 写多个子表），单批 8~10ms。
+写入优化：
+
+先显式建子表（ensureSubTables() + 内存缓存）
+再多子表合并 INSERT（一条 SQL 写多个子表），单批 8~10ms
+batchInsert() 里 INSERT 不带 USING
+为什么拆两步：TDengine 的 INSERT INTO 子表 USING 超表 TAGS(...) 隐式建表，一批涉及 1000 个首次写入的子表时会失败。拆成"显式建表 + 缓存 + 纯 INSERT"更稳定。
 
 九、数据库维护建议
 索引优化
@@ -507,4 +562,4 @@ JDBC URL 加 rewriteBatchedStatements=true，批量插入速度提升 5-10 倍�
 
 reportTime 显式设置：不依赖 MyBatis-Plus 自动填充（只填充 MySQL 库值，内存对象可能为 null）。
 
-压测验证：5 万条，两边数据一致（49802 = 49802）。
+压测验证：100 台设备持续压测，两边数据 100% 一致。

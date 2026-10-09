@@ -1,36 +1,72 @@
+markdown
 # Smart-Office 项目进度与架构蓝图
 
-本文档记录 Smart-Office 项目从零开发到容器化、工业物联网接入、配置管理、监控体系的完整进度。
+**文档版本**：v1.5
+**最后更新**：2026-10-09
+**对应代码版本**：Smart-Office v1.5
+
+本文档记录 Smart-Office 项目从零开发到多模块、容器化、工业物联网、仿真层、数据一致性的完整进度。
+
+## 变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|----------|
+| v1.0 | 2026-09-27 | 基础框架、JWT、RBAC、MQTT |
+| v1.2 | 2026-10-04 | 审批流、延迟队列、审计日志、数据权限 |
+| v1.3 | 2026-10-05 | Nacos、Prometheus、Grafana |
+| v1.4 | 2026-10-05 | TDengine 双写 |
+| v1.5 | 2026-10-09 | 多模块重构、设备仿真层、MQTT 持久会话 + 补发、数据零丢失验证、文档全面更新 |
 
 ---
 
 ## 一、项目定位
 
 - **项目名称**：企业级智慧协同办公平台（Smart-Office）
-- **技术栈**：SpringBoot 3.3.5 + SpringCloud 2023 + MyBatis-Plus 3.5.5 + MySQL 8.0 + Redis + JWT + RabbitMQ 3.13.7 + Redisson 3.27.2 + Docker + Docker Compose + EMQX + Paho MQTT 1.2.5 + Nacos 2.3.2 + **TDengine 3.3** + Prometheus + Grafana
+- **技术栈**：SpringBoot 3.3.5 + SpringCloud 2023 + MyBatis-Plus 3.5.5 + MySQL 8.0 + Redis + JWT + RabbitMQ 3.13.7 + Redisson 3.27.2 + Docker + Docker Compose + EMQX + Paho MQTT 1.2.5 + Nacos 2.3.2 + TDengine 3.3 + Prometheus + Grafana + Git/Gitee
 - **目标**：打造一个具备高并发、高可用、可扩展的工业级后端系统，作为通往工业物联网方向的实战跳板。
-- **设计来源**：按长城汽车冲焊车间真实工业场景设计，实现"工业物联网数据采集 + 三级权限管理 + **时序数据存储**"最小闭环。
+- **设计来源**：按长城汽车冲焊车间真实工业场景设计，实现"工业物联网数据采集 + 三级权限管理 + 时序数据存储 + 设备仿真"完整闭环。
 
 ---
 
-## 二、最新项目结构
+## 二、最新项目结构（多模块）
 
 ```text
-com.example.smart_office
-├── annotation (RequiresPermission 自定义权限注解)
-├── common (Result, GlobalExceptionHandler)
-├── config (WebConfig, MybatisPlusConfig, RabbitMQConfig, MqttConfig, MyMetaObjectHandler, PermissionCacheRefreshListener)
-├── controller (UserController, ApprovalController)
-├── entity (SysUser, SysRole, SysPermission, SysUserRole, SysApproval, SysApprovalRecord, DeviceTelemetry, SysAuditLog, SysDept, dto/)
-├── interceptor (JwtInterceptor)
-├── mapper (SysUserMapper, SysRoleMapper, SysPermissionMapper, SysUserRoleMapper, SysApprovalMapper, SysApprovalRecordMapper, DeviceTelemetryMapper, SysAuditLogMapper, SysDeptMapper)
-├── service (SysUserService, SysApprovalService, AuditLogService, RegisterMessageConsumer, ApprovalTimeoutConsumer, MqttSubscriber, TelemetryQueue, TelemetryBatchWriter, MqttIdempotentService, DeadLetterService, TdengineWriteService, impl/)
-└── utils (JwtUtils)
+smart-office (父 pom, packaging=pom)
+├── smart-office-app                        业务模块
+│   └── com.example.smart_office
+│       ├── annotation (RequiresPermission)
+│       ├── common (Result, GlobalExceptionHandler)
+│       ├── config (WebConfig, MybatisPlusConfig, RabbitMQConfig, MqttConfig, MyMetaObjectHandler, PermissionCacheRefreshListener)
+│       ├── controller (UserController, ApprovalController)
+│       ├── entity (SysUser, SysRole, SysPermission, SysUserRole, SysApproval, SysApprovalRecord, DeviceTelemetry, SysAuditLog, SysDept, dto/)
+│       ├── interceptor (JwtInterceptor)
+│       ├── mapper (XXXMapper)
+│       ├── service (SysUserService, SysApprovalService, AuditLogService, MqttSubscriber, TelemetryQueue, TelemetryBatchWriter, MqttIdempotentService, DeadLetterService, TdengineWriteService, impl/)
+│       └── utils (JwtUtils)
+│
+├── smart-office-simulation                 仿真模块（独立部署）
+│   └── com.example.smart_office.simulation
+│       ├── SimulationApplication
+│       ├── domain (Device, DeviceState, DeviceType, DeviceStateMachine, DeviceRegistry, FaultType, FaultSeverity, FaultState, ProtectionType, ProtectionAction)
+│       ├── engine (TelemetrySimulator, FaultEvolver, FaultInjector, ProtectionEngine, SimulationScheduler, TelemetrySample)
+│       ├── infrastructure.mqtt (MqttProperties, TelemetryPublisher)
+│       ├── application (FaultManagementService, CommandLineController)
+│       └── config (DeviceSeeder, DeviceGenerationProperties)
+│
+└── deploy                                   部署编排
+    ├── docker-compose.yml
+    ├── data/tdengine/
+    ├── prometheus/
+    ├── sql/
+    └── ...
+resources（smart-office-app）：
 
-resources
-├── application.yml（本地最小配置：Nacos 地址 + 应用名 + 环境）
-├── bootstrap.yml（SpringCloud Bootstrap 配置）
-└── application-docker.yml.bak（本地完整配置备份，SpringBoot 不读）
+application.yml（本地骨架配置：Nacos 地址 + 应用名 + 环境）
+
+bootstrap.yml（SpringCloud Bootstrap 配置）
+
+⚠️ v1.5 已删 .bak 备份文件（防误打包）
+
 三、已完成模块
 模块	功能	状态
 环境搭建	JDK 17, MySQL, Redis, RabbitMQ, Erlang, WSL 2, Docker, EMQX, TDengine	✅
@@ -42,14 +78,20 @@ RabbitMQ	注册后异步发送通知（生产者 + 消费者）	✅
 Docker Compose	一键启动 9 个服务	✅
 RBAC 权限	权限表 + 权限查询 + 权限缓存 + 接口级鉴权 + 三级管理	✅
 审批流	提交审批 + 延迟队列（TTL + 死信）+ 分布式锁（Redisson）	✅
-MQTT 设备接入	EMQX Broker + QoS 1 + 持久会话 + Redis 幂等 + 线程池 + 批量插入 + 死信 + 50000 条压测	✅ 工业级
-TDengine 双写	MySQL 主链路 + TDengine 旁路，异常隔离，多子表合并 INSERT，压测 5 万条两边一致	✅
+MQTT 设备接入	EMQX Broker + QoS 1 + 持久会话 + Redis 幂等 + 线程池 + 批量插入 + 死信	✅ 工业级
+TDengine 双写	MySQL 主链路 + TDengine 旁路，异常隔离，多子表合并 INSERT	✅
 权限缓存刷新	Redis Pub/Sub，权限变更秒级生效	✅
-审计日志	记录权限变更、审批处理，操作人、目标、旧值、新值、IP、时间	✅
-数据权限	加部门表，用户表加 dept_id，非管理员只能看本部门	✅
+审计日志	记录权限变更、审批处理	✅
+数据权限	部门隔离，非管理员只能看本部门	✅
 Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	✅
-监控体系	Prometheus + Grafana + 告警规则（HTTP 5xx、JVM 内存、服务下线）	✅
+监控体系	Prometheus + Grafana + 告警规则	✅
+多模块 Maven	父 pom + app + simulation	✅ v1.5 新增
+设备仿真层	10/100/1000 台设备，物理模型 + 故障演化 + 保护域	✅ v1.5 新增
+MQTT 持久会话 + 补发	cleanSession=false + offline 队列 + 补发	✅ v1.5 新增
+数据零丢失验证	app 掉线 30 秒，3200 条补发	✅ v1.5 新增
+MySQL 索引优化	idx_device_time + EXPLAIN 验证	✅ v1.5 新增
 文档	API/DB/DEPLOY/ENV/BUG_LOG/PROGRESS/ARCHITECTURE/RBAC_DESIGN/README	✅
+Git 版本管理	Gitee 仓库：git@gitee.com:xiao-hongh/smart-office.git	✅ v1.5 新增
 四、RBAC 权限模块（已完成，含三级管理 + 数据权限）
 4.1 基础 RBAC
 ☑ 创建 sys_permission 和 sys_role_permission 表
@@ -79,7 +121,7 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ 不能造第二个老板
 
-☑ 测试通过：老板改自己报错、厂长改班长成功、班长改员工成功、班长改厂长报错
+☑ 测试通过
 
 4.3 权限缓存刷新（Redis Pub/Sub）
 ☑ 改权限后，发消息到 permission:refresh 频道
@@ -88,7 +130,7 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ JwtInterceptor 缓存未命中时，查库重建
 
-☑ 测试通过：权限变更秒级生效，用户不用重新登录
+☑ 测试通过：权限变更秒级生效
 
 4.4 数据权限（部门隔离）
 ☑ 创建 sys_dept 表，sys_user 表加 dept_id
@@ -99,7 +141,7 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ cacheKey 加 userId，避免缓存串数据
 
-☑ 测试通过：非管理员只看到本部门，管理员看到所有
+☑ 测试通过
 
 五、审批流模块（已完成，含延迟队列 + 分布式锁）
 5.1 基础审批流
@@ -120,9 +162,7 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ 未批，发提醒；已批，跳过
 
-☑ 消费端 Redis SETNX 幂等，防重复提醒
-
-☑ 测试通过：30 分钟后消息进死信队列，消费者发提醒；重复投递被幂等拦住
+☑ 消费端 Redis SETNX 幂等
 
 5.3 分布式锁（Redisson）
 ☑ 引入 Redisson 依赖
@@ -131,24 +171,22 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ 拿到锁后，查审批单状态，已处理则跳过
 
-☑ 测试通过：两个请求同时发，一个报"审批单正在处理中"（锁生效），一个报"审批单已处理"（状态校验生效）
+☑ 测试通过：并发控制 + 状态校验双保险
 
 六、MQTT 设备接入（已完成，工业级）
 6.1 基础链路
-☑ 用 Docker 启动 EMQX Broker
+☑ Docker 启动 EMQX Broker
 
-☑ 用 MQTTX 模拟设备，发布温度数据到 factory/device/001/temperature
+☑ 订阅 factory/device/+/telemetry
 
-☑ Java 后端集成 Paho MQTT 客户端，订阅 factory/device/+/temperature
-
-☑ 成功接收设备上报数据，写入 device_telemetry 表
-
-☑ 温度超过 80℃ 自动告警
+☑ 写入 device_telemetry 表
 
 6.2 工业级改造
 ☑ 去掉 Thread.sleep(1000)，改用 MqttCallbackExtended.connectComplete() 回调订阅
 
-☑ QoS 1 + 持久会话（cleanSession=false + 固定 clientId）
+☑ QoS 1 + 持久会话（cleanSession=false + 固定 clientId + session_expiry_interval=7200）
+
+☑ MQTT 回调只入队，不打日志（避免阻塞回调线程）
 
 ☑ Redis SETNX 幂等（key：mqtt:idempotent:{deviceId}:{timestamp}）
 
@@ -162,18 +200,25 @@ Nacos 配置管理	多环境配置 + 动态刷新 + @RefreshScope + @PreDestroy	
 
 ☑ device_telemetry 加索引（idx_device_time）
 
-☑ EMQX 参数调优（max_mqueue_len、max_inflight）
+☑ EMQX max_mqueue_len=100000（离线队列调大，防溢出）
 
 6.3 压测数据
 指标	数值
-压测条数	50000
-EMQX 消息丢弃	0
-批量插入	设计 1000 条/批，实际超时触发 50~150 条/批，MySQL 单批 10~30ms
-消费线程	4 线程并行
-MySQL 入库	49802
-TDengine 入库	49802
-两边一致性	✅ 完全一致
-七、时序库双写（已完成，v1.4 新增）
+设备数	100 台
+速率	100 条/秒
+MQTT 持久会话	clean_start=false、session_expiry_interval=7200
+双写一致性	MySQL 与 TDengine 数据 100% 一致
+死信	0
+6.4 数据零丢失验证（v1.5）
+场景：app 掉线 30 秒后重连。
+
+检查点	结果
+app 掉线时 enqueued_msgs	3200（离线队列积压）
+app 重连后 enqueued_msgs	0（补发完成）
+MySQL 主表	3262
+TDengine 超表	3166
+补发入库耗时	< 1 秒
+七、时序库双写（已完成，v1.4 起）
 7.1 架构设计
 ☑ MySQL 主链路 + TDengine 旁路，异常隔离
 
@@ -181,15 +226,17 @@ TDengine 入库	49802
 
 ☑ REST 连接（jdbc:TAOS-RS://），不依赖本地客户端
 
-7.2 写入优化
+7.2 写入优化（v1.5 改进）
 ☑ 按设备分组，多子表合并 INSERT（一条 SQL 写多个子表）
+
+☑ 先显式建子表（ensureSubTables() + 缓存），再纯 INSERT
 
 ☑ 单批 8~10ms，反超 MySQL 的 10~30ms
 
-☑ 子表按设备自动建表（USING ... TAGS，幂等）
+☑ app 启动自动建超表（CREATE STABLE IF NOT EXISTS）
 
 7.3 数据一致性保障
-☑ 时间戳唯一（压测脚本用 baseTs + i 全局递增，避免 TDengine 主键覆盖）
+☑ 时间戳唯一（压测脚本用 baseTs + i 全局递增）
 
 ☑ reportTime 显式设置（不依赖 MyBatis-Plus 自动填充）
 
@@ -199,14 +246,41 @@ TDengine 入库	49802
 
 7.4 压测数据
 指标	数值
-压测条数	50000
-MySQL 入库	49802
-TDengine 入库	49802
+设备数	100 台
+速率	100 条/秒
+MySQL 入库	与 TDengine 一致
 TDengine 单批耗时	8~10ms
-MySQL 单批耗时	10~30ms
 两边一致性	✅ 完全一致
 死信	0
-八、审计日志（已完成）
+八、设备仿真层（v1.5 新增）
+8.1 模块定位
+独立的 Maven 模块 smart-office-simulation，模拟 10/100/1000 台工业设备，通过 MQTT 发送遥测。生产环境不部署。
+
+8.2 核心功能
+☑ 配置驱动：line-count × types × count-per-type = 设备总数
+
+☑ 设备类型：冲压机、焊机、涂装、总装、传送带
+
+☑ 设备状态机：RUNNING ⇄ IDLE → FAULT → MAINTENANCE，非法迁移抛异常
+
+☑ 物理模型：温度 = 基准 + 昼夜周期 + 劣化趋势 + 高斯噪声
+
+☑ 故障演化引擎：4 类故障（轴承磨损/过热/传感器漂移/突发断裂）
+
+☑ 保护域（工业硬逻辑）：温度 > 95℃ 降载，> 105℃ 停机；振动 > 10mm/s 停机
+
+☑ 手动注入：命令行 inject {deviceId} {faultType}
+
+☑ 故障注入自动切 RUNNING（故障只在运行中出现）
+
+8.3 验证
+10 台故障设备，4 种故障类型全触发保护
+
+保护动作去重（loadReduced 标志）+ FAULT 状态温度冻结
+
+仿真器独立运行，通过 MQTT 与主系统零代码耦合
+
+九、审计日志（已完成）
 ☑ 创建 sys_audit_log 表
 
 ☑ 编写 SysAuditLog 实体、SysAuditLogMapper
@@ -215,10 +289,10 @@ MySQL 单批耗时	10~30ms
 
 ☑ assignRole、handleApproval 加审计日志
 
-☑ 测试通过：数据库有记录
+☑ 测试通过
 
-九、Nacos 配置管理（已完成）
-☑ Nacos 容器化部署（Docker Compose 第 6 个服务）
+十、Nacos 配置管理（已完成）
+☑ Nacos 容器化部署
 
 ☑ Nacos 连 MySQL，配置持久化
 
@@ -232,9 +306,9 @@ MySQL 单批耗时	10~30ms
 
 ☑ @PreDestroy 管理 MQTT 连接生命周期
 
-☑ 踩坑 8 条（问题 49-56）
+☑ 踩坑 8 条（BUG_LOG 问题 49-56）
 
-十、监控体系（已完成）
+十一、监控体系（已完成）
 ☑ SpringBoot 通过 Micrometer 暴露 /actuator/prometheus 端点
 
 ☑ Prometheus 采集指标，存时序数据
@@ -249,121 +323,84 @@ JVM 堆内存 > 85%，持续 5 分钟
 
 服务下线，持续 1 分钟
 
-十一、待开发模块
+十二、待开发模块
 模块	核心功能	优先级
+AI Agent 层	Function Calling + RAG + 智能监控 Agent	⭐⭐⭐ v1.5 提级
+Agent 分层设计	规则前置 + 异常聚合 + LLM 分级调用（省 token）	⭐⭐⭐
+评估体系	仿真埋真值 → Agent 精确率/召回率	⭐⭐
 时序库查询切换	冷热分离、看板/趋势查询走 TDengine	⭐⭐
-告警通知	Alertmanager，对接邮件/钉钉	⭐⭐
-实时通知	WebSocket 站内信推送	⭐⭐
+Alertmanager 告警通知	对接邮件/钉钉	⭐⭐
+WebSocket 站内信推送	实时通知	⭐⭐
+仿真层班次调度	设备自主进入 RUNNING/IDLE	⭐⭐
+仿真层产线故障传导	上游故障 → 下游待料	⭐⭐
 微服务拆分	Nacos + Gateway + OpenFeign	⭐
 链路追踪	SkyWalking	⭐
-AI Agent 层	RAG 知识库问答 + 工具调用	⭐
-十二、里程碑记录
+十三、里程碑记录
 2026-09-27：完成 JWT 鉴权、Redis 缓存、RabbitMQ 异步解耦、1000 并发压测。
 
-2026-09-28：完成 Docker 容器化部署，容器成功连接宿主机 MySQL/Redis/RabbitMQ，写入数据库成功。
+2026-09-28：完成 Docker 容器化部署。
 
-2026-09-29：完成 RBAC 权限模型、审批流提交接口、MQTT 设备接入，成功接收设备上报数据。
+2026-09-29：完成 RBAC 权限模型、审批流提交接口、MQTT 设备接入。
 
 2026-09-30：完成 MQTT 链路工业级改造。QoS 1 + 持久会话 + Redis 幂等 + 4 线程批量插入 + 死信记录。50000 条压测，EMQX 消息丢弃 0。
 
-2026-10-01：完成四个模块：
+2026-10-01：完成审批流延迟队列、分布式锁、权限缓存刷新、三级管理。
 
-审批流延迟队列：TTL + 死信队列 + 幂等，30 分钟超时提醒。
+2026-10-04：完成 Docker Compose 一键部署、审计日志、数据权限、Nacos 配置管理。
 
-分布式锁：Redisson，审批处理并发控制。
+2026-10-05：完成监控体系、TDengine 时序库双写。压测 5 万条，两边数据一致（49802 = 49802）。
 
-权限缓存刷新：Redis Pub/Sub，权限变更秒级生效。
+2026-10-09（Day 2，v1.5）：
 
-三级管理：老板、厂长、班长、员工，越级拦截。
+✅ 单模块 → 多模块 Maven 工程重构（父 pom + app + simulation）
 
-2026-10-04：完成三个模块：
+✅ 部署文件归位（deploy/ 目录）
 
-Docker Compose 一键部署：一键启动，环境变量覆盖。
+✅ Nacos 配置重建 + 修复编码问题
 
-审计日志：记录权限变更、审批处理。
+✅ 代码 Lombok 化重构
 
-数据权限：部门隔离，非管理员只能看本部门。
+✅ 仿真层（10/100/1000 台设备配置驱动 + 物理模型）
 
-2026-10-04：完成 Nacos 配置管理。
+✅ 故障演化（4 类故障）+ 保护域（熔断/降载/停机/复位）
 
-Nacos 容器化部署
+✅ MQTT 持久会话（cleanSession=false）+ offline 队列补发
 
-配置从本地 application.yml 迁移到 Nacos
+✅ 数据零丢失验证（app 掉线 30 秒，3200 条补发，< 1 秒入库）
 
-多环境配置（dev / docker / prod）
+✅ TDengine 自动建超表（清库后不用手动建）
 
-@RefreshScope 动态刷新
+✅ EMQX max_mqueue_len=100000
 
-@PreDestroy 管理 MQTT 连接生命周期
+✅ MySQL 索引 idx_device_time（EXPLAIN 验证走索引）
 
-踩坑 8 条（问题 49-56）
+✅ .gitignore 补全
 
-2026-10-05：完成监控体系。
+✅ Git 版本管理（Gitee 仓库：git@gitee.com:xiao-hongh/smart-office.git）
 
-SpringBoot 暴露 /actuator/prometheus
+✅ 9 份文档全面更新至 v1.5
 
-Prometheus 采集指标
-
-Grafana 可视化（JVM、HTTP）
-
-告警规则 3 条（HTTP 5xx、JVM 内存、服务下线）
-
-Docker Compose 扩展为 8 个服务
-
-2026-10-05（下午）：完成 TDengine 时序库双写。
-
-新增 TdengineWriteService，MySQL 主链路 + TDengine 旁路
-
-REST 连接 + 多子表合并 INSERT 优化
-
-排查 12 个真实坑（问题 57-68）
-
-压测 5 万条，两边数据一致（49802 = 49802），无死信
-
-TDengine 单批 8~10ms，反超 MySQL 10~30ms
-
-Docker Compose 扩展为 9 个服务
-
-2026-10-09:
-✅ 单模块 → 多模块 Maven 工程重构（父 pom + 2 子模块）
-
-✅ app 编译通过，jar 名保持 smart-office-0.0.1-SNAPSHOT.jar
-
-✅ 部署文件归位（deploy/ 目录：docker-compose、prometheus、sql、data）
-
-✅ Dockerfile 随 app 走
-
-✅ 清理垃圾（BOOT-INF、.bak、application-dev.yml、旧 target）
-
-✅ docker compose config 验证通过
-
-✅ 多模块 Maven 工程（app + simulation）
-
-✅ 部署文件归位（deploy/）
-
-✅ Nacos 配置中心可用
-
-✅ app 启动成功
-
-✅ simulation 第一批代码（领域模型 + 10 台设备）
-
-十三、下一步计划
+十四、下一步计划
 第一阶段：L1 收尾（目标：1 个月）
-顺序	项目	优先级	依赖	工作量	状态
-1	Nacos 配置管理	P0	无	1 周	✅
-2	监控体系：Prometheus + Grafana	P0	Nacos	1 周	✅
-3	TDengine 双写	P0	无	1 周	✅
-4	时序库查询切换（冷热分离）	P0	TDengine 双写	3-5 天	⬜
-5	简历收尾 + 投递	P0	无	持续	⬜
-6	Alertmanager 告警通知	P1	Prometheus	1 天	⬜
-7	WebSocket 站内信推送	P1	无	3-5 天	⬜
+顺序	项目	优先级	状态
+1	Nacos 配置管理	P0	✅
+2	监控体系 Prometheus + Grafana	P0	✅
+3	TDengine 双写	P0	✅
+4	MQTT 持久会话 + 补发	P0	✅
+5	MySQL 索引 + P0 优化	P0	✅
+6	时序库查询切换（冷热分离）	P0	⬜
+7	WebSocket 站内信推送	P1	⬜
+8	仿真层班次调度 + 产线故障传导	P1	⬜
+9	简历收尾 + 投递	P0	⏳ 持续
 第二阶段：L2 微服务（目标：1-2 个月）
-顺序	项目	优先级	依赖	工作量
-8	微服务拆分：Nacos + Gateway + OpenFeign	P1	Nacos	3-4 周
-9	链路追踪：SkyWalking	P2	微服务	1 周
-第三阶段：L3 差异化（目标：2-3 个月）
-顺序	项目	优先级	依赖	工作量
-10	AI Agent 层：RAG + 工具调用	P2	微服务	3-4 周
+顺序	项目	优先级	工作量
+10	微服务拆分：Nacos + Gateway + OpenFeign	P1	3-4 周
+11	链路追踪：SkyWalking	P2	1 周
+第三阶段：L3 差异化（核心目标）
+顺序	项目	优先级	工作量
+12	AI Agent 层：Function Calling + RAG + 智能监控	P0	1-2 周
+13	Agent 分层设计：规则前置 + 异常聚合 + LLM 分级调用	P0	1 周
+14	评估体系：仿真埋真值 → 精确率/召回率	P1	3 天
 分级说明
 L0 能跑：功能通，单人能用
 
@@ -372,3 +409,52 @@ L1 能扛：并发 + 容错 + 可观测 + 配置管理
 L2 能扩：微服务 + 网关 + 配置中心
 
 L3 能演：可观测 + 可回滚 + 有 SLA
+
+十五、Day 2 复盘（v1.5）
+完成的核心闭环
+text
+仿真层（100 台设备，物理模型 + 故障 + 保护）
+  ↓ MQTT（持久会话 + 补发 + 幂等）
+主系统（订阅 + 攒批 + 消费）
+  ↓
+MySQL（主链路）+ TDengine（旁路，双写一致）
+关键认知
+cleanSession 是 MQTT 持久会话的核心：true 掉线丢消息，false 补发
+
+MQTT 回调是单线程的：回调里不能做 IO（日志、Redis）
+
+EMQX offline 队列有容量限制：max_mqueue_len 必须调大
+
+TDengine 超表是子表的前置依赖：清库后必须自动重建
+
+多模块工程的依赖隔离：仿真模块只依赖 MQTT + Jackson，不引入 web/mysql/redis
+
+离线队列是双刃剑：好处是不丢消息，坏处是重连时一次性推大量消息
+
+数据指标
+设备数：100 台
+
+MQTT 速率：100 条/秒
+
+双写一致性：100%
+
+死信：0
+
+补发：3200 条 < 1 秒入库
+
+踩坑数量
+Day 2 新增 8 个坑（BUG_LOG 问题 69-76）
+
+累计 76 个坑
+
+十六、文档清单（9 份）
+文档	用途	版本
+README.md	项目说明、快速启动	v1.5
+API.md	接口文档	v1.5
+DATABASE.md	数据库设计	v1.5
+DEPLOYMENT.md	部署与运维手册	v1.5
+ENVIRONMENT.md	开发环境清单	v1.5
+BUG_LOG.md	踩坑日志（76 条）	v1.5
+PROGRESS.md	项目进度与架构蓝图	v1.5
+ARCHITECTURE.md	架构与原理笔记	v1.5
+RBAC_DESIGN.md	RBAC 权限模型设计	v1.4

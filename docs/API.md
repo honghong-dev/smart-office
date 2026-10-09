@@ -1,8 +1,9 @@
+markdown
 # Smart-Office API 接口文档
 
-**文档版本**：v1.4
-**最后更新**：2026-10-05
-**对应代码版本**：Smart-Office v1.4
+**文档版本**：v1.5
+**最后更新**：2026-10-09
+**对应代码版本**：Smart-Office v1.5
 
 ## 变更记录
 
@@ -13,21 +14,21 @@
 | v1.2 | 2026-10-04 | 补 Docker Compose、审计日志、数据权限、权限缓存刷新、三级管理、assignDept 接口 |
 | v1.3 | 2026-10-05 | 补 Nacos 配置管理、Prometheus 监控；修正 Broker 地址 |
 | v1.4 | 2026-10-05 | 补 TDengine 时序库双写；修正 MQTT 性能指标 |
+| v1.5 | 2026-10-09 | 多模块重构；MQTT 持久会话 + 补发；Topic 改 /telemetry；新增设备仿真模块；新增 Agent 规划 |
 
-文档说明：本文档记录 Smart-Office 项目所有已开发接口。每新增一个接口，需同步更新本文档。
+**文档说明**：本文档记录 Smart-Office 项目所有已开发接口。每新增一个接口，需同步更新本文档。
 
 **配置来源**：配置从 Nacos 拉取（Data ID: `smart-office-docker.yml`）。
 
 **时序库**：TDengine 3.3（REST 连接 `jdbc:TAOS-RS://localhost:6041/smart_office`），用于设备遥测数据存储，与 MySQL 双写。
 
-基础路径：
-
+**基础路径**：
 - 本地 IDEA：http://localhost:8080
 - Docker 容器：http://localhost:8081（宿主机 8081 映射容器 8080）
 
-统一返回格式：所有接口均返回 Result<T> 结构：`{ "code": 200, "msg": "操作成功", "data": {...} }`
+**统一返回格式**：所有接口均返回 Result<T> 结构：`{ "code": 200, "msg": "操作成功", "data": {...} }`
 
-鉴权说明：除登录、注册接口外，其他接口均需在请求头携带 `Authorization: Bearer <Token>`
+**鉴权说明**：除登录、注册接口外，其他接口均需在请求头携带 `Authorization: Bearer <Token>`
 
 ---
 
@@ -67,20 +68,20 @@
 
 ### 1.1 用户登录
 
-接口描述：用户通过账号密码登录，成功后返回 JWT Token。
+**接口描述**：用户通过账号密码登录，成功后返回 JWT Token。
 
-请求方式：POST
-请求路径：`/api/user/login`
-Content-Type：application/json
+**请求方式**：POST
+**请求路径**：`/api/user/login`
+**Content-Type**：application/json
 
-请求参数：
+**请求参数**：
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | username | String | 是 | 用户名 |
 | password | String | 是 | 密码 |
 
-请求示例：
+**请求示例**：
 
 ```json
 {
@@ -517,13 +518,13 @@ json
 }
 说明：
 
-审计日志同步写入，高并发下可能成为瓶颈，v1.5 改 MQ 异步写
+审计日志同步写入，高并发下可能成为瓶颈，v1.6 改 MQ 异步写
 
 记录内容：操作人、操作类型、目标、旧值、新值、IP、时间
 
 四、设备遥测模块（Device Telemetry）
 4.1 设备数据上报（MQTT 通道，非 HTTP）
-接口描述：设备通过 MQTT 协议向 EMQX Broker 发送温度数据，Java 后端订阅 factory/device/+/temperature 主题，接收后经幂等校验、批量入库，并双写 TDengine。
+接口描述：设备通过 MQTT 协议向 EMQX Broker 发送遥测数据，Java 后端订阅 factory/device/+/telemetry 主题，接收后经幂等校验、批量入库，并双写 TDengine。
 
 通信协议：MQTT
 Broker 地址：
@@ -532,43 +533,55 @@ Broker 地址：
 
 Docker 内网：tcp://emqx:1883
 
-订阅主题：factory/device/+/temperature
+订阅主题：factory/device/+/telemetry
 QoS：1
-持久会话：cleanSession=false + 固定 clientId
+持久会话：cleanSession=false + 固定 clientId + session_expiry_interval=7200
+离线补发：app 掉线期间，EMQX 缓存消息到 offline 队列；重连后自动补发（实测补发 3200 条，1 秒内全部入库）
+EMQX max_mqueue_len：100000（默认 1000，调大防溢出）
 
 Payload 格式：
 
 json
 {
-  "deviceId": "001",
+  "deviceId": "PRESS-01-01",
+  "deviceName": "冲压机-01-01",
+  "state": "RUNNING",
   "temperature": 85.5,
+  "vibration": 2.3,
+  "speed": 1200,
   "timestamp": 1735689600000
 }
 字段说明：
 
 字段	类型	必填	说明
-deviceId	String	是	设备 ID
-temperature	Double	是	温度值（摄氏度）
+deviceId	String	是	设备 ID，如 PRESS-01-01
+deviceName	String	是	设备名称
+state	String	是	设备状态：RUNNING / IDLE / FAULT / MAINTENANCE
+temperature	Double	是	温度（℃）
+vibration	Double	是	振动（mm/s）
+speed	Integer	是	转速（rpm）
 timestamp	Long	是	消息时间戳（毫秒），用于幂等键
 后台处理逻辑：
 
-MQTT 回调线程只做入队（TelemetryQueue.offer），不碰数据库
+MQTT 回调线程只做入队（TelemetryQueue.offer），不碰数据库，不打印日志（避免阻塞 MQTT 回调线程）
 
 TelemetryBatchWriter 用 4 线程并行消费，每攒够 1000 条或超时 1 秒，批量 INSERT
 
 入库前用 Redis SETNX 做幂等校验（key：mqtt:idempotent:{deviceId}:{timestamp}）
 
-温度 > 80℃ 时，按批次统计告警数量，不逐条打印
+温度 > 95℃ 触发保护，由仿真器侧处理
 
 解析失败、入库失败的消息进死信队列（DeadLetterService），不丢弃
 
 性能指标（压测数据）：
 
-50000 条消息，EMQX 消息丢弃 0
+100 台设备 × 每秒 1 条 = 100 条/秒稳定运行
 
-批量插入设计 1000 条/批，实际超时触发 50~150 条/批，MySQL 单批 10~30ms
+MySQL 与 TDengine 双写，数据 100% 一致
 
-MySQL 与 TDengine 双写，两边数据一致（49802 = 49802），无死信
+死信 0
+
+TDengine 单批 8~10ms
 
 双写架构：
 
@@ -576,16 +589,18 @@ MySQL 主链路，TDengine 时序库旁路，异常隔离
 
 主链路失败整批进死信，旁路失败不影响主链路
 
-TDengine 采用多子表合并 INSERT，单批 8~10ms
+TDengine 采用「先建子表 + 缓存 + 批量 INSERT」策略，避免大批量首次写入失败
 
-详见 ARCHITECTURE.md 双写架构章节
+app 启动自动建超表 telemetry（CREATE STABLE IF NOT EXISTS）
+
+详见 ARCHITECTURE.md 双写架构章节。
 
 4.2 消息处理状态查询（规划中）
 接口描述：查询 mqtt_message_log 表，查看每条消息的处理状态（RECEIVED / PROCESSED / FAILED / DEAD）。
 
 请求方式：GET
 请求路径：/api/mqtt/message/log
-状态：规划中，v1.5 实现
+状态：规划中，v1.6 实现
 
 五、内部机制（非 HTTP 接口）
 5.1 权限缓存刷新（Redis Pub/Sub）
@@ -622,14 +637,14 @@ Group：DEFAULT_GROUP
 
 详见 ARCHITECTURE.md 第二十节
 
-5.5 TDengine 双写（新增）
+5.5 TDengine 双写
 连接：REST 连接（jdbc:TAOS-RS://）
 
-写入：按设备分组，多子表合并 INSERT
+写入：按设备分组，先建子表（幂等），再多子表合并 INSERT
 
 容错：旁路失败只记死信，不影响 MySQL 主链路
 
-一致性：压测 5 万条，两边数据一致
+一致性：100 台设备持续压测，两边数据 100% 一致
 
 详见 ARCHITECTURE.md 双写架构章节
 
@@ -669,15 +684,72 @@ bizCode	说明	对应场景
 7	提交审批	POST	/api/approval/submit	✅
 8	处理审批	POST	/api/approval/handle	✅ 分布式锁
 9	审计日志查询	GET	/api/audit/page	✅
-10	设备数据上报	MQTT	factory/device/+/temperature	✅ 工业级 + TDengine 双写
+10	设备数据上报	MQTT	factory/device/+/telemetry	✅ 持久会话 + 补发 + TDengine 双写
 11	消息处理状态查询	GET	/api/mqtt/message/log	⬜ 规划中
 八、待开发接口（规划中）
 序号	接口名称	请求方式	路径	预计版本
-1	用户登出	POST	/api/user/logout	v1.1
-2	修改用户信息	PUT	/api/user/update	v1.1
-3	删除用户	DELETE	/api/user/{id}	v1.1
-4	角色列表查询	GET	/api/role/list	v1.2
-5	待我审批列表	GET	/api/approval/todo	v1.3
-6	设备遥测数据查询	GET	/api/device/telemetry	v1.4
-7	死信消息查询	GET	/api/mqtt/dead-letter	v1.5
-8	部门列表查询	GET	/api/dept/list	v1.2
+1	用户登出	POST	/api/user/logout	v1.6
+2	修改用户信息	PUT	/api/user/update	v1.6
+3	删除用户	DELETE	/api/user/{id}	v1.6
+4	角色列表查询	GET	/api/role/list	v1.6
+5	待我审批列表	GET	/api/approval/todo	v1.6
+6	设备遥测数据查询	GET	/api/device/telemetry	v1.6
+7	死信消息查询	GET	/api/mqtt/dead-letter	v1.6
+8	部门列表查询	GET	/api/dept/list	v1.6
+9	AI Agent 监控接口	POST	/api/agent/analyze	v2.0（AI 层）
+10	死信重试接口	POST	/api/mqtt/dead-letter/retry	v1.6
+九、设备仿真模块（Simulation，独立部署）
+说明：smart-office-simulation 是独立的 Maven 模块，模拟 10/100/1000 台工业设备，通过 MQTT 发送遥测数据。生产环境不部署，只在开发和演示时启动。
+
+9.1 仿真器命令（控制台交互）
+启动 smart-office-simulation 后，控制台支持以下命令：
+
+命令	说明
+inject {deviceId} {faultType}	手动注入故障
+reset {deviceId}	复位设备（FAULT → IDLE）
+random {probability}	随机批量注入故障（0.0~1.0）
+status	查看所有设备状态
+help	帮助
+quit	退出
+faultType 可选：
+
+BEARING_WEAR（轴承磨损，振动上升）
+
+OVERHEAT（过热，温度指数上升）
+
+SENSOR_DRIFT（传感器漂移）
+
+SUDDEN_FAILURE（突发断裂）
+
+9.2 设备状态机
+text
+RUNNING ⇄ IDLE → FAULT → MAINTENANCE → IDLE/RUNNING
+非法迁移抛异常
+
+FAULT 状态必须经 MAINTENANCE 才能回 RUNNING
+
+9.3 保护域（工业硬逻辑，不走 AI）
+触发条件	保护动作
+温度 > 95℃	降载（只触发一次）
+温度 > 105℃	停机 → FAULT
+振动 > 10 mm/s	停机 → FAULT
+复位条件：温度 < 50℃ 且 振动 < 3 mm/s
+
+9.4 配置驱动
+application.yml 里配置产线数和每种设备数：
+
+yaml
+simulation:
+  device-generation:
+    line-count: 2            # 2 条产线
+    count-per-type: 10       # 每种 10 台
+    types: [PRESS, WELD, PAINT, ASSEMBLY, CONVEYOR]
+设备总数 = line-count × types.length × count-per-type（如 2 × 5 × 10 = 100 台）
+
+9.5 与主系统通信
+仿真器通过 MQTT 发数据到 EMQX
+
+主系统 smart-office-app 订阅，接收后入库
+
+零代码耦合，靠 MQTT 协议通信
+详见 ARCHITECTURE.md 设备仿真章节

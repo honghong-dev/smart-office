@@ -1,6 +1,22 @@
+markdown
 # Smart-Office 架构与原理笔记
 
+**文档版本**：v1.5
+**最后更新**：2026-10-09
+**对应代码版本**：Smart-Office v1.5
+
 本文档记录项目开发、部署、工业物联网接入、配置管理、监控体系过程中涉及的核心原理与底层逻辑，是"为什么这么做"的答案。
+
+## 变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|----------|
+| v1.0 | 2026-09-27 | 请求链路、端口映射、容器网络 |
+| v1.1 | 2026-09-29 | RBAC、审批流、分布式锁 |
+| v1.2 | 2026-10-04 | Redis Pub/Sub、审计日志、数据权限 |
+| v1.3 | 2026-10-05 | Nacos 配置管理、监控体系 |
+| v1.4 | 2026-10-05 | TDengine 双写架构 |
+| v1.5 | 2026-10-09 | 多模块工程；MQTT 持久会话 + 补发；设备仿真层；双写修复（先建子表）；索引优化 |
 
 ---
 
@@ -263,29 +279,27 @@ String cacheKey = "user:page:" + currentUser.getId() + ":" + pageNum + ":" + pag
 
 十八、工业物联网数据链路（MQTT）
 架构组成
-设备（Publisher）：模拟设备，用 MQTTX 或 Java 脚本发布数据。
+设备（Publisher）：仿真器（smart-office-simulation），或 MQTTX 手动测试。
 
 Broker（EMQX）：MQTT 消息代理服务器。
 
 后端（Subscriber）：Java 后端通过 Paho MQTT 客户端订阅 Topic。
 
 数据链路
-设备向 factory/device/001/temperature 发布 JSON 数据，QoS 1。
+设备向 factory/device/{deviceId}/telemetry 发布 JSON 数据，QoS 1。
 
-EMQX 接收并转发给所有订阅了 factory/device/+/temperature 的客户端。
+EMQX 接收并转发给所有订阅了 factory/device/+/telemetry 的客户端。
 
-Java 后端 messageArrived 回调收到消息，只做入队（TelemetryQueue.offer），不碰数据库。
+Java 后端 messageArrived 回调收到消息，只做入队（TelemetryQueue.offer），不碰数据库，不打印日志（避免阻塞 MQTT 回调线程）。
 
 TelemetryBatchWriter 用 4 线程并行消费，每攒够 1000 条或超时 1 秒，批量 INSERT 到 device_telemetry。
 
 入库前用 Redis SETNX 做幂等校验（key：mqtt:idempotent:{deviceId}:{timestamp}）。
 
-温度 > 80℃ 时，按批次统计告警数量，不逐条打印。
-
 解析失败、入库失败的消息进死信队列（DeadLetterService），不丢弃。
 
 通配符说明
-+：单层通配符。factory/device/+/temperature 匹配 factory/device/001/temperature。
++：单层通配符。factory/device/+/telemetry 匹配 factory/device/001/telemetry。
 
 #：多层通配符。factory/# 匹配 factory 下所有层级。
 
@@ -296,14 +310,49 @@ QoS	语义	丢消息	重复	握手次数	速度	适用场景
 2	恰好一次	不会	不会	4	最慢	金融交易
 本项目选 QoS 1 + 应用层幂等：QoS 1 保证不丢，Redis 幂等保证不重，效果上等于 QoS 2，但吞吐量高得多。这叫"效果上恰好一次"（Effectively Once）。
 
-持久会话
-cleanSession=false + 固定 clientId：EMQX 为掉线的订阅端暂存消息，订阅端重连后补发。
+持久会话（Persistent Session）
+MQTT 持久会话的核心参数是 cleanSession：
 
-会话过期时间：本项目配 2 小时。超过后，EMQX 清掉会话和暂存消息。
+cleanSession=true（默认）：每次连接都是全新会话。断开后，Broker 立即销毁会话，不缓存消息。app 掉线期间的数据全丢。
 
-补发的双刃剑：好处是不丢消息；坏处是重连时一次性推大量消息，消费端可能扛不住。
+cleanSession=false：Broker 保留会话（订阅关系、离线消息）。断开后，Broker 缓存离线消息。重连后自动补发。
 
-EMQX 消息丢弃的常见原因
+本项目配置：
+
+java
+MqttConnectOptions options = new MqttConnectOptions();
+options.setClientId("smart-office-backend");   // 固定 clientId
+options.setCleanSession(false);                // 持久会话
+options.setAutomaticReconnect(true);
+EMQX 侧验证：
+
+bash
+docker exec smart-office-emqx emqx ctl clients show smart-office-backend
+输出关键字段：
+
+clean_start=false → 持久会话生效
+
+session_expiry_interval=7200 → 会话保留 2 小时
+
+enqueued_msgs=N → 离线队列积压 N 条待补发
+
+connected=true → app 当前在线
+
+常见错误：代码里有两处 setCleanSession，后面那行 true 覆盖了前面的 false。 排查时要看"实际生效的最后一行"。
+
+EMQX 离线队列容量
+max_mqueue_len 默认 1000。 app 掉线期间，sim 发超过 1000 条，多的直接丢。
+
+调大方式： docker-compose.yml 里给 emqx 加：
+
+yaml
+environment:
+  - EMQX_MQTT__MAX_MQUEUE_LEN=100000
+或通过 EMQX Dashboard → 管理 → 配置 → MQTT 直接改。
+
+工业级估算：max_mqueue_len ≥ 最长离线时间 × 消息速率。
+
+消息丢弃的常见原因
 无订阅者：订阅端掉线瞬间，EMQX 认为该 topic 没有订阅者，直接丢弃。
 
 离线队列满：max_mqueue_len 超限，超出部分丢弃。
@@ -322,7 +371,9 @@ EMQX 消息丢弃的常见原因
 解决方案：
 
 加兜底：队列空了等 200ms 就 flush。
+
 把 take() 改成 poll(100ms)。
+
 注意：QUEUE_EMPTY_FLUSH_DELAY_MS 不能设为 0，否则低速生产时会频繁小批次 flush，批量优势降低。200ms 是经验值。
 
 关键技术点
@@ -332,12 +383,18 @@ MQTT 是发布-订阅模型，与 HTTP 的请求-响应模型完全不同。
 
 性能优化：单线程 + 单条插入是性能杀手，必须异步化 + 批量插入 + 专用时序数据库。
 
-本项目落地（截至 v1.4）
-已落地：4 线程消费 + 1000 条/批（设计）+ Redis 幂等 + 死信。压测 50000 条，EMQX 丢弃 0。
+本项目落地（截至 v1.5）
+4 线程消费 + 1000 条/批（设计）+ Redis 幂等 + 死信。
 
-已落地：MySQL + TDengine 双写，压测 5 万条两边数据一致（49802 = 49802），无死信。
+MQTT 回调只入队，不打日志（避免阻塞回调线程）。
 
-下一步：冷热分离、查询切换（看板/趋势图走 TDengine）。
+持久会话 cleanSession=false + session_expiry_interval=7200。
+
+EMQX max_mqueue_len=100000。
+
+MySQL + TDengine 双写，100 台设备持续压测，数据 100% 一致。
+
+离线补发验证：app 掉线 30 秒，EMQX 缓存 3200 条；app 重连后 1 秒内全部入库。
 
 十九、时序库双写架构（TDengine）
 解决什么问题
@@ -373,10 +430,62 @@ TDengine JDBC 有两种连接方式：
 REST 连接	jdbc:TAOS-RS://	走 taosAdapter HTTP	端口通即可
 本项目选 REST（jdbc:TAOS-RS://localhost:6041/smart_office），容器化场景不依赖本地库。
 
+超表 + 子表模型
+TDengine 用"超级表 + 子表"建模：
+
+sql
+-- 超表（模板，只定义一次）
+CREATE STABLE IF NOT EXISTS telemetry (
+    ts TIMESTAMP,
+    temperature DOUBLE
+) TAGS (
+    device_id NCHAR(32)
+);
+
+-- 子表（每设备一张）
+CREATE TABLE IF NOT EXISTS d_press_01_01
+USING telemetry TAGS ('PRESS-01-01');
+关键：子表依赖超表存在。超表不存在，CREATE TABLE ... USING 直接报错。
+
+自动建超表（必须）
+清库（DROP DATABASE）后，超表也会被删。app 启动时必须自动建超表。
+
+在 TdengineWriteService.init() 里：
+
+java
+@PostConstruct
+public void init() throws SQLException {
+    conn = DriverManager.getConnection(url, username, password);
+    try (Statement stmt = conn.createStatement()) {
+        stmt.executeUpdate(
+            "CREATE STABLE IF NOT EXISTS telemetry (" +
+            "  ts TIMESTAMP, temperature DOUBLE" +
+            ") TAGS (device_id NCHAR(32))"
+        );
+    }
+}
 写入优化
 逐设备写入：47 个设备 47 次网络往返，慢（296ms/批）。
 
-多子表合并 INSERT：一条 SQL 写多个子表，一批只发一次。语法要点——只有第一个子表带 INSERT INTO，后续子表直接写子表名。
+多子表合并 INSERT：一条 SQL 写多个子表，一批只发一次。
+
+语法要点：只有第一个子表带 INSERT INTO，后续子表直接写子表名。
+
+先建子表，再 INSERT：
+
+ensureSubTables()：预建所有子表（幂等，CREATE TABLE IF NOT EXISTS）
+
+加 createdSubTables 内存缓存，同一子表只建一次
+
+batchInsert() 里 INSERT 不带 USING，只插数据
+
+为什么拆两步：
+
+TDengine 支持 INSERT INTO 子表 USING 超表 TAGS(...) 隐式建子表
+
+但一批 INSERT 涉及 1000 个"首次写入的子表"时，TDengine 3.3.0 处理不过来
+
+拆成"显式建表 + 缓存 + 纯 INSERT"更稳定
 
 优化后：单批 8~10ms，反超 MySQL 的 13~30ms。
 
@@ -387,9 +496,64 @@ reportTime 显式设置：不依赖 MyBatis-Plus 自动填充（那只在 MySQL 
 
 死信记录：旁路失败进死信，message_id 用 topic + nanoTime 保证唯一。
 
-二十、启动编排与依赖就绪
+索引优化（MySQL 主表）
+MySQL 的 device_telemetry 表，查询模式是"给定设备ID + 时间范围"。 1000 台 × 每秒 1 条 = 每天 8640 万行，没索引会全表扫描。
+
+sql
+CREATE INDEX idx_device_time ON device_telemetry (device_id, report_time);
+EXPLAIN 验证：
+
+text
+type: range                  ← 区间查询
+key: idx_device_time         ← 走索引
+rows: 33                     ← 只扫 33 行（而不是全表）
+二十、设备仿真层（smart-office-simulation）
+定位
+独立的 Maven 模块，模拟 10/100/1000 台工业设备，通过 MQTT 发送遥测。 生产环境不部署，只在开发/演示时启动。
+
+分层
+text
+domain/          【领域层】Device、DeviceState、FaultType、ProtectionAction
+engine/          【引擎层】TelemetrySimulator、FaultEvolver、ProtectionEngine、SimulationScheduler
+infrastructure/  【基础设施层】mqtt 输出
+application/     【应用层】FaultManagementService、CommandLineController
+config/          【配置层】DeviceSeeder、DeviceGenerationProperties
+设备状态机
+text
+RUNNING ⇄ IDLE → FAULT → MAINTENANCE → IDLE/RUNNING
+非法迁移抛异常（防"跳步"改坏状态）
+
+FAULT 状态必须经 MAINTENANCE 才能回 RUNNING（工业安全底线）
+
+物理模型
+text
+温度 = 基准温度 + 昼夜周期(24h sin) + 劣化趋势 + 高斯噪声 + 故障增量
+振动 = 基准振动 + 温度耦合(0.1×(T-T0)) + 高斯噪声 + 故障增量
+故障演化（4 类故障）
+故障类型	演化曲线
+BEARING_WEAR	振动持续上升（峰值 +15 mm/s）
+OVERHEAT	温度线性上升（每 5 秒 +5℃）
+SENSOR_DRIFT	温度缓慢偏移（峰值 +8℃）
+SUDDEN_FAILURE	前 30 秒正常，之后跳变（+50℃ / +12mm/s）
+保护域（工业硬逻辑，不走 AI）
+触发条件	保护动作
+温度 > 95℃	降载（只触发一次）
+温度 > 105℃	停机 → FAULT
+振动 > 10 mm/s	停机 → FAULT
+关键设计：保护动作去重（loadReduced 标志），FAULT 状态故障冻结，避免重复触发和温度失控。
+
+故障注入
+手动： inject {deviceId} {faultType}（命令行）
+
+随机： random {probability}
+
+自动： SimulationScheduler.tick() 里每 120 秒随机注入一次
+
+注入故障时，若设备为 IDLE，自动切换到 RUNNING（故障只在运行中出现）。
+
+二十一、启动编排与依赖就绪
 核心思想
-项目启动 ≠ 依赖就绪。SpringBoot 启动过程中，MySQL、Redis、RabbitMQ、MQTT Broker、Nacos 各有各的就绪时间戳。只有所有依赖都返回就绪信号，项目才能对外提供服务。
+项目启动 ≠ 依赖就绪。 SpringBoot 启动过程中，MySQL、Redis、RabbitMQ、MQTT Broker、Nacos 各有各的就绪时间戳。只有所有依赖都返回就绪信号，项目才能对外提供服务。
 
 各依赖的就绪时间戳
 组件	就绪标志
@@ -413,13 +577,13 @@ ApplicationRunner / CommandLineRunner：容器完全启动后执行。
 
 SpringBoot Actuator 的 /actuator/health：生产环境用，配合 Kubernetes Readiness Probe。
 
-二十一、Nacos 配置管理
+二十二、Nacos 配置管理
 解决什么问题
-问题一：配置写死在 application.yml，改了要重新打包、重启服务。
+配置写死在 application.yml，改了要重新打包、重启服务。
 
-问题二：多环境配置分散，改公共配置容易漏。
+多环境配置分散，改公共配置容易漏。
 
-问题三：生产环境重启服务 = 短暂停机。
+生产环境重启服务 = 短暂停机。
 
 Nacos 是什么
 Nacos 是配置中心 + 注册中心。本项目用它的配置中心能力。
@@ -459,7 +623,6 @@ Group：DEFAULT_GROUP
 格式：YAML
 
 为什么 Data ID 是 smart-office-docker.yml：
-
 SpringBoot 拼 Data ID 的规则：
 
 text
@@ -493,7 +656,6 @@ java
 @RefreshScope
 @Configuration
 public class MqttConfig {
-
     @Value("${mqtt.broker}")
     private String broker;
 
@@ -530,9 +692,9 @@ public class MqttConfig {
 正确做法：连接类配置改完，重启服务。
 
 踩坑记录
-见 BUG_LOG 问题 49-56。
+见 BUG_LOG.md 问题 49-56。
 
-二十二、监控体系（Prometheus + Grafana）
+二十三、监控体系（Prometheus + Grafana）
 解决什么问题
 服务出问题，不知道哪一层挂了。需要"可观测性"。
 
@@ -583,7 +745,7 @@ Grafana 可视化
 
 告警闭环：Prometheus 检测 + 触发，Alertmanager 负责通知（可选）。
 
-二十三、应用 vs 环境：本地开发与容器部署的区别
+二十四、应用 vs 环境：本地开发与容器部署的区别
 核心认知
 SpringBoot 是"应用"，需要一堆"外部服务"（MySQL、Redis、EMQX、Nacos、TDengine）才能工作。这些不是 SpringBoot 的一部分，是"外部依赖"。应用启动时连不上它们，就报错。
 
@@ -618,5 +780,61 @@ Nacos 是启动依赖：bootstrap 阶段就要连，连不上直接启动失败�
 Nacos 业务配置：smart-office-docker.yml，包含所有连接信息，运行时从 Nacos 拉取。
 
 容器环境变量：docker-compose.yml 里的 environment，注入服务名。
-
 配置模板用变量：jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/... —— 本地默认 localhost，容器注入 mysql，一份模板适配多环境。
+
+二十五、数据零丢失全链路（v1.5 验证）
+场景：100 台设备，每秒 100 条遥测，app 掉线 30 秒后重连。
+
+完整链路：
+
+text
+sim 发 3200 条 → EMQX → app 掉线 → EMQX 缓存到 offline 队列
+    ↓
+app 重连 → EMQX 自动补发 → app 消费 → MySQL + TDengine 双写
+验证结果：
+
+检查点	结果
+EMQX clean_start	false（持久会话）
+EMQX session_expiry_interval	7200（2 小时）
+app 掉线时 enqueued_msgs	3200（离线队列积压）
+app 重连后 enqueued_msgs	0（补发完成）
+app 重连后 delivered_msgs	3200
+MySQL 主表	3262
+TDengine 超表	3166
+死信	0
+补发入库耗时	< 1 秒
+结论：MQTT 持久会话 + offline 队列补发 + MySQL/TDengine 双写，端到端数据零丢失。
+
+关键参数汇总：
+
+MQTT clientId：固定（smart-office-backend）
+
+MQTT cleanSession：false
+
+MQTT session_expiry_interval：7200 秒
+
+EMQX max_mqueue_len：100000
+
+Paho maxInflight：1000
+
+二十六、多模块工程结构
+父 pom + 子模块：
+
+text
+smart-office (父 pom, packaging=pom)
+├── smart-office-app          业务模块（jar）
+├── smart-office-simulation   仿真模块（jar）
+└── deploy                    部署编排（非 Maven 模块）
+关键设计：
+
+父 pom 只管版本管理（<dependencyManagement>）+ 声明子模块
+
+业务依赖放子 pom，不写 version（由父 pom 管）
+
+仿真模块只依赖 spring-boot-starter + jackson-databind + paho，不引入 web / mysql / redis
+
+jar 名保持兼容（<finalName>smart-office-0.0.1-SNAPSHOT</finalName>），Dockerfile 不用改
+
+UTF-8 显式声明（project.build.sourceEncoding=UTF-8），避免 Windows GBK 踩坑
+
+面试价值：展示"模块化设计 + 依赖隔离 + 生产环境不部署仿真模块"的工程意识。
