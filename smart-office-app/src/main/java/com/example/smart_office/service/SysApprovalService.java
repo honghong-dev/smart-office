@@ -16,4 +16,7 @@ public interface SysApprovalService extends IService<SysApproval> {
     Long submitApproval(Long applicantId, ApprovalSubmitDTO dto);
 
     void handleApproval(ApprovalHandleDTO dto);
+
+    class RuleEngineTest {
+    }
 }

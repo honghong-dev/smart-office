@@ -1,9 +1,9 @@
 markdown
 # Smart-Office 架构与原理笔记
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 
 本文档记录项目开发、部署、工业物联网接入、配置管理、监控体系过程中涉及的核心原理与底层逻辑，是"为什么这么做"的答案。
 
@@ -838,3 +838,199 @@ jar 名保持兼容（<finalName>smart-office-0.0.1-SNAPSHOT</finalName>），Do
 UTF-8 显式声明（project.build.sourceEncoding=UTF-8），避免 Windows GBK 踩坑
 
 面试价值：展示"模块化设计 + 依赖隔离 + 生产环境不部署仿真模块"的工程意识。
+
+
+二十七、AI Agent 架构（v1.6 新增）
+27.1 为什么做 AI Agent
+问题：传统阈值告警有三个硬伤：
+
+只看单点，不看上下文：温度 90℃ 可能正常（高负载），也可能异常（缓慢过热），阈值无法区分
+
+告警不收敛：同一设备持续异常，每次采样都告警 → 告警风暴
+
+无根因研判：运维只收到"设备 X 温度高"，不知道为什么高、该怎么处理
+
+目标：用 LLM 做"二次研判"，把"单点阈值告警"升级为"上下文 + 根因 + 处置建议"。
+
+27.2 为什么不用"全量喂 LLM"
+朴素方案：100 台设备 × 每秒 100 条数据 → 全量喂 LLM。
+
+问题：
+
+成本爆炸：每秒 100 次 LLM 调用，¥10 撑不过 10 分钟
+
+延迟爆炸：LLM 响应 2-5 秒，追不上数据流
+
+幻觉风险：对正常数据也可能"分析出问题"
+
+工业方案："规则引擎前置过滤 + LLM 深度研判"双层架构。
+
+27.3 双层架构的核心思想
+text
+第一层（毫秒级）  规则引擎 → 过滤 99% 正常数据
+第二层（秒级）    LLM     → 对异常片段深度研判
+关键洞察：LLM 不是"看门狗"，是"研判员"。看门狗是规则引擎。
+
+这就像医院分诊：
+
+护士（规则引擎）先量体温、血压，判断"是否需要医生看"
+
+医生（LLM）只处理分诊出来的病人
+
+如果让医生给每个进门的人做全身体检 → 医生累死，病人排长队。
+
+27.4 为什么用"规则引擎"而不是"用 LLM 直接判断阈值"
+问：为什么不直接让 LLM 判断"温度 > 95 是否异常"？
+
+答：
+
+LLM 不确定性：同样输入可能给不同答案，工业场景要求可复现
+
+LLM 延迟：2-5 秒 vs 规则引擎微秒级，规则引擎能在数据流入时即时过滤
+
+LLM 成本：每秒 100 次调用，成本爆炸
+
+规则引擎可审计：规则明确、可测试、可追溯
+
+工业级判断：确定性的判断交给规则，模糊的判断交给 LLM。
+
+27.5 为什么挂载在 TelemetryBatchWriter.flush() 之后
+三个候选挂载点：
+
+挂载点	评价
+MqttSubscriber.messageArrived()	❌ 会阻塞 MQTT ACK，导致 EMQX 重发
+TelemetryQueue.take() 后	❌ 数据还没入库，LLM 查不到历史
+flush() 之后	✅ 数据已入库 + 异步不阻塞主链路
+关键：数据先持久化，再分析。 这是工业级"先落库，再加工"的原则。
+
+27.6 为什么要 Redis SETNX 去重
+问题：一台设备持续异常，每批数据（1 秒 1 批）都命中规则 → 告警风暴。
+
+方案：Redis SETNX + TTL 5 分钟。
+
+text
+首次命中 → SETNX 成功 → 处理 + 告警
+5 分钟内重复 → SETNX 失败 → 跳过
+5 分钟后 → TTL 过期 → 允许重新触发
+关键设计：TTL 不能无限长。
+
+TTL 太长 → "恢复后再次异常"无法触发
+
+TTL 太短 → 告警仍然风暴
+
+5 分钟是工业场景经验值（覆盖一次典型故障演化周期）
+
+27.7 为什么要 @Async 异步
+主链路：MQTT → MySQL + TDengine，要求高吞吐（100 条/秒）。
+
+AI Agent：调 LLM 需要 2-5 秒，如果同步执行，会阻塞 flush，拖慢主链路。
+
+方案：@Async 异步执行。
+
+text
+主线程：flush() → 入库 → 调 aiMonitorService.onBatchFlushed(batch) → 立刻返回 → 继续处理下一批
+异步线程：处理 AI Agent 逻辑（2-5 秒）
+代价：需要处理"防御性拷贝"问题（见 27.8）。
+
+27.8 为什么要防御性拷贝
+问题：@Async 方法拿到的是 List 引用，主线程 batch.clear() 会触发 ConcurrentModificationException。
+
+方案：异步方法入口做防御性拷贝。
+
+java
+@Async
+public void onBatchFlushed(List<DeviceTelemetry> batch) {
+    List<DeviceTelemetry> snapshot = new ArrayList<>(batch);  // 拷贝
+    for (DeviceTelemetry t : snapshot) {  // 遍历拷贝，不遍历原集合
+        // ...
+    }
+}
+关键坑：拷贝本身不够，遍历时必须用拷贝后的集合。常见错误是拷了但 for 循环还是用原集合。
+
+27.9 为什么要 LLM 客户端抽象
+问题：开发阶段用真实 LLM API，调试烧钱、依赖网络、响应慢。
+
+方案：接口 + Mock 实现。
+
+java
+public interface LlmClient {
+    String chat(String systemPrompt, String userPrompt);
+}
+MockLlmClient：开发调试用，返回固定响应
+
+DeepSeekClient：生产用，调 DeepSeek API
+
+通过 @ConditionalOnProperty + 配置切换
+
+这就是"依赖倒置原则"：面向接口编程，实现可替换。
+
+收益：
+
+开发阶段不花钱、不依赖网络
+
+跑通后换真 API，代码不变
+
+面试能讲"我先用 Mock 验证编排逻辑，再接真 LLM API"
+
+27.10 数据流全景图
+text
+MQTT 遥测（100 台设备 × 1 条/秒）
+    ↓
+MqttSubscriber → TelemetryQueue（入队，不阻塞 ACK）
+    ↓
+TelemetryBatchWriter（4 线程消费 + 攒批 1000 条/1 秒）
+    ↓
+    ├─ MySQL 批量 INSERT（主链路）
+    ├─ TDengine 批量 INSERT（旁路）
+    └─ ★ AiMonitorService.onBatchFlushed(batch)（异步）
+                ↓
+        ┌──────────────────────────┐
+        │ 遍历 batch（防御性拷贝）  │
+        │   ↓                       │
+        │ RuleEngine 判断（4 条规则）│
+        │   ↓ 命中                  │
+        │ Redis SETNX 去重          │
+        │   ↓ 首次                  │
+        │ 组装上下文                │
+        │   ↓                       │
+        │ LlmClient.chat()          │
+        │   ↓                       │
+        │ AiToolExecutor.sendAlert()│
+        │   ↓                       │
+        │ 写 ai_analysis_log        │
+        └──────────────────────────┘
+                ↓
+        输出：ai_analysis_log + alert_record + ai.alert.queue
+27.11 可靠性设计原则
+原则	落地
+不阻塞主链路	@Async + 异步执行
+失败隔离	try-catch 包住 AI 逻辑，失败不影响主链路
+去重防风暴	Redis SETNX + TTL 5 分钟
+可审计	全流程写 ai_analysis_log
+可降级	配置开关关闭 AI 层
+可测试	单元测试 + 端到端测试
+27.12 演进路线
+版本	能力
+v1.6（当前）	规则引擎 + Function Calling（Mock LLM）
+v1.7	接 DeepSeek 真 API + 告警 MQ 消费者
+v2.0	多轮工具编排 + RAG 文档问答
+v3.0	ReAct 模式 + 多 Agent 协作
+27.13 详细设计
+本文档只讲"为什么"。具体实现（组件设计、SQL、MQ 拓扑、测试、面试话术）见 docs/AI_AGENT_DESIGN.md。
+
+27.14 面试价值
+能讲"为什么这么设计"，比"怎么做"更重要。
+
+面试官可能问：
+
+"为什么不全量喂 LLM？"（答：成本 + 延迟 + 幻觉）
+
+"为什么要 Redis 去重？"（答：告警风暴 + TTL 语义）
+
+"为什么用 Mock LLM？"（答：依赖倒置 + 先验证编排逻辑）
+
+"为什么挂载在 flush() 之后？"（答：先持久化，再分析）
+
+能答清楚这 4 个"为什么"，就体现了"架构思维"。
+
+| **v1.6** | **2026-10-13** | **AI Agent 架构（规则引擎 + LLM 双层）；异步边界防御性拷贝；Redis 去重防告警风暴** |

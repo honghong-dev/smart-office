@@ -52,6 +52,9 @@ public class TelemetryBatchWriter {
     @Autowired
     private TdengineWriteService tdengineWriteService;
 
+    @Autowired
+    private com.example.smart_office.service.ai.AiMonitorService aiMonitorService;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private ExecutorService executor;
     private volatile boolean running = true;
@@ -126,8 +129,13 @@ public class TelemetryBatchWriter {
     private DeviceTelemetry parseAndCheckIdempotent(TelemetryQueue.TelemetryMessage msg) {
         try {
             JsonNode node = objectMapper.readTree(msg.payload());
+            log.info("★ 原始 payload: {}", msg.payload());
             String deviceId = node.get("deviceId").asText();
             double temperature = node.get("temperature").asDouble();
+            Double vibration = node.has("vibration") ? node.get("vibration").asDouble() : null;
+            Integer speed = node.has("speed") ? node.get("speed").asInt() : null;
+            String state = node.has("state") ? node.get("state").asText() : null;
+
             long ts = node.has("timestamp")
                     ? node.get("timestamp").asLong()
                     : System.currentTimeMillis();
@@ -141,7 +149,9 @@ public class TelemetryBatchWriter {
             DeviceTelemetry telemetry = new DeviceTelemetry();
             telemetry.setDeviceId(deviceId);
             telemetry.setTemperature(temperature);
-            // ★ 显式设置 reportTime，不依赖 MyBatis-Plus 自动填充
+            telemetry.setVibration(vibration);
+            telemetry.setSpeed(speed);
+            telemetry.setState(state);
             telemetry.setReportTime(java.time.LocalDateTime.now());
             return telemetry;
         } catch (Exception e) {
@@ -183,6 +193,14 @@ public class TelemetryBatchWriter {
                         t.getDeviceId() + ":" + t.getTemperature(), "DB_ERROR");
             }
             return;
+        }
+
+
+        // ========== ★★★ 新增：AI 监控 Agent（异步，不阻塞主链路）★★★ ==========
+        try {
+            aiMonitorService.onBatchFlushed(batch);
+        } catch (Exception e) {
+            log.error("AI Agent 调用失败，不影响主链路", e);
         }
 
         // ========== 旁路：TDengine 双写 ==========

@@ -1,9 +1,9 @@
 markdown
 # Smart-Office 部署与运维手册
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 
 本文档记录 Smart-Office 项目从本地运行到 Docker Compose 一键部署的完整操作流程和故障排查指南。
 
@@ -17,6 +17,7 @@ markdown
 | v1.3 | 2026-10-05 | TDengine、Prometheus |
 | v1.4 | 2026-10-05 | 完整 Compose 配置 |
 | v1.5 | 2026-10-09 | 多模块部署；本地起仿真器；TDengine 自动建超表；EMQX 参数调大 |
+| **v1.6** | **2026-10-13** | **AI Agent 配置（DeepSeek API Key 环境变量）；AI Agent 相关故障排查** |
 
 ---
 
@@ -505,6 +506,12 @@ MQTT 补发推一半卡住	回调里 log.info 阻塞	回调里只入队，日志
 多模块重构后 simulation 打包失败	空模块无主类	加启动类，或从父 pom modules 移除
 多模块重构后 Jackson 缺失	spring-boot-starter 不带 Jackson	加 jackson-databind 依赖
 Maven 打包中文乱码	缺 project.build.sourceEncoding	父 pom 加 UTF-8 属性
+| AI Agent 不触发 | 规则未命中 / provider 配置错 | 检查 `RuleEngine` 阈值 + `ai.llm.provider` 配置 |
+| AI Agent 告警风暴 | Redis 去重未生效 | 检查 Redis 连接 + `ai:agent:dedup:*` key 是否存在 |
+| LLM 调用报 401 | DeepSeek API Key 未配置 / 过期 | 检查环境变量 `DEEPSEEK_API_KEY` |
+| ai_analysis_log 写不进去 | MySQL JSON 字段格式错 | 检查 `tool_calls` 是否为合法 JSON（见 BUG_LOG 问题 81）|
+| 告警发 MQ 失败 | SimpleMessageConverter 不支持 POJO | 用 Jackson 序列化成 JSON 字符串（见 BUG_LOG 问题 82）|
+
 十二、安全配置清单
 数据库
 MySQL 8.0：使用 mysql_native_password 兼容旧驱动。
@@ -594,6 +601,111 @@ target/、*.jar
 *.log、logs/
 
 data/、deploy/data/
+
+
+## 十四点五、AI Agent 配置（v1.6 新增）
+
+### 14.5.1 配置项
+
+**在 Nacos 的 `smart-office-docker.yml` 里加：**
+
+```yaml
+ai:
+  llm:
+    provider: mock              # mock / deepseek
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: https://api.deepseek.com
+      model: deepseek-chat
+环境变量注入（Docker Compose）：
+
+yaml
+smart-office:
+  environment:
+    - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+    - AI_LLM_PROVIDER=mock      # 开发用 mock，生产用 deepseek
+本地 IDEA 跑（.env 文件或 IDEA 运行配置）：
+
+环境变量：DEEPSEEK_API_KEY=sk-xxxxxx
+
+或直接用 mock（无需 API Key）
+
+14.5.2 切换 LLM 实现
+场景	provider	说明
+开发调试	mock	不花钱、不依赖网络、秒回
+生产/演示	deepseek	调真实 API，需要 API Key
+切换方式：改 Nacos 配置或环境变量，重启 app。
+
+14.5.3 AI Agent 启用/禁用
+禁用 AI 层（临时降级）：
+
+方式 A（推荐）：注释掉 TelemetryBatchWriter.flush() 里的 AI 调用
+
+java
+// try {
+//     aiMonitorService.onBatchFlushed(batch);
+// } catch (Exception e) {
+//     log.error("AI Agent 调用失败，不影响主链路", e);
+// }
+方式 B：把 AiMonitorService 加 @ConditionalOnProperty，通过配置开关控制
+
+14.5.4 AI Agent 相关表初始化
+部署时，deploy/sql/smart_office.sql 里的建表 SQL 需包含 v1.6 新增的两张表：
+
+sql
+-- AI 分析日志表
+CREATE TABLE IF NOT EXISTS ai_analysis_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    trigger_rule VARCHAR(128) NOT NULL,
+    trigger_value VARCHAR(64),
+    context_json JSON,
+    llm_response TEXT,
+    tool_calls JSON,
+    analysis_result VARCHAR(32),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_device_time (device_id, created_at),
+    KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 告警记录表
+CREATE TABLE IF NOT EXISTS alert_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    level VARCHAR(16) NOT NULL,
+    reason VARCHAR(512) NOT NULL,
+    source VARCHAR(32) NOT NULL DEFAULT 'AI_AGENT',
+    ai_log_id BIGINT,
+    status TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    handled_at DATETIME,
+    handled_by VARCHAR(64),
+    KEY idx_device_time (device_id, created_at),
+    KEY idx_status (status),
+    KEY idx_level (level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+⚠️ 注意：MySQL 容器已启动过的话，docker-entrypoint-initdb.d 里的 SQL 不会重跑。需手动执行：
+
+bash
+docker exec -i smart-office-mysql mysql -uroot -p123456 smart_office < deploy/sql/v1.6_ai_tables.sql
+14.5.5 AI Agent MQ 拓扑
+首次启动 app 时，Spring Boot 会自动声明：
+
+Exchange：ai.alert.exchange（DirectExchange）
+
+Queue：ai.alert.queue（durable，含死信配置）
+
+DLX Exchange：ai.alert.dlx.exchange
+
+DLX Queue：ai.alert.dlx.queue
+
+验证：RabbitMQ 管理台（http://localhost:15673）→ Queues → 看到 ai.alert.queue 和 ai.alert.dlx.queue。
+
+清理堆积（如需）：
+
+bash
+docker exec -it smart-office-rabbitmq rabbitmqctl purge_queue ai.alert.queue
+
 
 十五、数据零丢失验证（v1.5）
 场景：100 台设备，每秒 100 条遥测，app 掉线 30 秒后重连。

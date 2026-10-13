@@ -1,10 +1,9 @@
 markdown
 # Smart-Office 项目进度与架构蓝图
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
-
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 本文档记录 Smart-Office 项目从零开发到多模块、容器化、工业物联网、仿真层、数据一致性的完整进度。
 
 ## 变更记录
@@ -16,6 +15,7 @@ markdown
 | v1.3 | 2026-10-05 | Nacos、Prometheus、Grafana |
 | v1.4 | 2026-10-05 | TDengine 双写 |
 | v1.5 | 2026-10-09 | 多模块重构、设备仿真层、MQTT 持久会话 + 补发、数据零丢失验证、文档全面更新 |
+| **v1.6** | **2026-10-13** | **AI Agent 智能监控（规则引擎 + Function Calling + 告警去重）；单元测试 + 数据对账；9 份文档更新到 v1.6** |
 
 ---
 
@@ -39,9 +39,12 @@ smart-office (父 pom, packaging=pom)
 │       ├── config (WebConfig, MybatisPlusConfig, RabbitMQConfig, MqttConfig, MyMetaObjectHandler, PermissionCacheRefreshListener)
 │       ├── controller (UserController, ApprovalController)
 │       ├── entity (SysUser, SysRole, SysPermission, SysUserRole, SysApproval, SysApprovalRecord, DeviceTelemetry, SysAuditLog, SysDept, dto/)
+│       │   └── ai (AiAnalysisLog, AlertRecord)          ★ v1.6 新增
 │       ├── interceptor (JwtInterceptor)
 │       ├── mapper (XXXMapper)
+│       │   └── ai (AiAnalysisLogMapper, AlertRecordMapper)   ★ v1.6 新增
 │       ├── service (SysUserService, SysApprovalService, AuditLogService, MqttSubscriber, TelemetryQueue, TelemetryBatchWriter, MqttIdempotentService, DeadLetterService, TdengineWriteService, impl/)
+│       │   └── ai (AiMonitorService, RuleEngine, LlmClient, MockLlmClient, AiToolExecutor)  ★ v1.6 新增
 │       └── utils (JwtUtils)
 │
 ├── smart-office-simulation                 仿真模块（独立部署）
@@ -92,6 +95,12 @@ MQTT 持久会话 + 补发	cleanSession=false + offline 队列 + 补发	✅ v1.5
 MySQL 索引优化	idx_device_time + EXPLAIN 验证	✅ v1.5 新增
 文档	API/DB/DEPLOY/ENV/BUG_LOG/PROGRESS/ARCHITECTURE/RBAC_DESIGN/README	✅
 Git 版本管理	Gitee 仓库：git@gitee.com:xiao-hongh/smart-office.git	✅ v1.5 新增
+| **AI Agent 智能监控** | **规则引擎（4 条）+ Function Calling（2 个工具）+ LLM 客户端抽象 + Redis 去重** | **✅ v1.6 新增** |
+| **AI Agent 单元测试** | **com.example.smart_office.service.ai.RuleEngineTest，5 个用例覆盖规则全分支（31ms 全过）** | **✅ v1.6 新增** |
+| **数据一致性对账** | **24 条 AI 分析 = 8 WARNING + 16 CRITICAL，逐层可追溯** | **✅ v1.6 新增** |
+| **AI 告警 MQ 拓扑** | **ai.alert.exchange + ai.alert.queue（含死信）** | **✅ v1.6 新增** |
+
+
 四、RBAC 权限模块（已完成，含三级管理 + 数据权限）
 4.1 基础 RBAC
 ☑ 创建 sys_permission 和 sys_role_permission 表
@@ -323,10 +332,80 @@ JVM 堆内存 > 85%，持续 5 分钟
 
 服务下线，持续 1 分钟
 
+## 十一点五、AI Agent 智能监控（v1.6 新增）
+
+### 11.5.1 模块定位
+
+在 MQTT 数据链路之上，增加"AI 二次研判"层。用规则引擎前置过滤，LLM 对异常片段深度分析，通过 Function Calling 调工具（查历史、发告警）。
+
+**核心洞察**：LLM 不是"看门狗"，是"研判员"。看门狗是规则引擎。
+
+### 11.5.2 核心功能
+
+**规则引擎（RuleEngine）**：
+- ☑ 4 条规则：`STATE_FAULT`、`TEMP_GT_95`、`VIB_GT_10`、`TEMP_GT_85`
+- ☑ 短路返回（命中第一个就返回）
+- ☑ 优先级：FAULT > 温度 > 振动 > 预警
+
+**LLM 客户端抽象（LlmClient）**：
+- ☑ 接口 + Mock 实现（`MockLlmClient`）
+- ☑ 配置驱动切换（`ai.llm.provider=mock/deepseek`）
+
+**Function Calling 工具（AiToolExecutor）**：
+- ☑ `query_device_history(deviceId, limit)`：查设备历史
+- ☑ `send_alert(deviceId, level, reason)`：写 MySQL + 发 MQ
+
+**主 Agent（AiMonitorService）**：
+- ☑ `@Async` 异步执行（不阻塞主链路）
+- ☑ 防御性拷贝（防 `ConcurrentModificationException`）
+- ☑ Redis SETNX 去重（5 分钟 TTL，防告警风暴）
+
+**挂载点**：
+- ☑ `TelemetryBatchWriter.flush()` → MySQL 入库后 → AI Agent（异步）
+
+**数据表**：
+- ☑ `ai_analysis_log`：AI 分析日志
+- ☑ `alert_record`：告警记录
+
+**MQ 拓扑**：
+- ☑ `ai.alert.queue`（含死信队列）
+
+**测试**：
+- ☑ 单元测试（`com.example.smart_office.service.ai.RuleEngineTest`，5 个用例，31ms 全过）
+- ☑ 端到端测试（仿真层注入故障）
+- ☑ 数据一致性对账（24 = 8 WARNING + 16 CRITICAL）
+
+### 11.5.3 关键设计决策
+
+| 决策 | 理由 |
+|------|------|
+| **规则引擎 + LLM 双层** | 全量喂 LLM → 成本爆炸 + 延迟爆炸 + 幻觉风险 |
+| **挂载在 flush() 之后** | 数据已入库，LLM 查得到历史 |
+| **@Async 异步** | 不阻塞主链路（MQTT → MySQL）|
+| **Redis SETNX 去重** | 防告警风暴，5 分钟 TTL |
+| **LLM 客户端抽象** | 开发用 Mock（不花钱），生产用 DeepSeek |
+
+### 11.5.4 验证数据
+
+| 指标 | 结果 |
+|------|------|
+| 单元测试 | 5 个用例，31ms 全过 |
+| 端到端测试 | 注入 10 个故障，AI Agent 处理 8 个 |
+| 数据对账 | 24 条 AI 分析 = 8 WARNING + 16 CRITICAL |
+| 告警数 | 16 条（8 TEMP_GT_95 + 8 STATE_FAULT）|
+
+**说明**：2 个故障未处理（`CONVEYOR-01-01` 振动缓慢上升、`ASSEMBLY-01-01` 瞬时故障），暴露了规则引擎覆盖缺口，是 v1.7 的优化方向。
+
+### 11.5.5 详细设计
+
+见 `docs/AI_AGENT_DESIGN.md`。
+
 十二、待开发模块
 模块	核心功能	优先级
-AI Agent 层	Function Calling + RAG + 智能监控 Agent	⭐⭐⭐ v1.5 提级
-Agent 分层设计	规则前置 + 异常聚合 + LLM 分级调用（省 token）	⭐⭐⭐
+| AI Agent 扩展 | RAG 文档问答 + 多轮工具编排 + 告警 MQ 消费者 | ⭐⭐⭐ v1.7 |
+| DeepSeek 真 API | 替换 MockLlmClient | ⭐⭐⭐ v1.7 |
+| 规则引擎补全 | 振动早预警（VIB_GT_5）+ 趋势异常检测 | ⭐⭐ v1.7 |
+| 评估体系 | 仿真埋真值 → Agent 精确率/召回率 | ⭐⭐ |
 评估体系	仿真埋真值 → Agent 精确率/召回率	⭐⭐
 时序库查询切换	冷热分离、看板/趋势查询走 TDengine	⭐⭐
 Alertmanager 告警通知	对接邮件/钉钉	⭐⭐
@@ -379,6 +458,19 @@ WebSocket 站内信推送	实时通知	⭐⭐
 ✅ Git 版本管理（Gitee 仓库：git@gitee.com:xiao-hongh/smart-office.git）
 
 ✅ 9 份文档全面更新至 v1.5
+2026-10-13（Day 3，v1.6）：
+- ✅ AI Agent 智能监控（规则引擎 + Function Calling + 工具执行 + 告警去重）
+- ✅ 规则引擎（4 条规则 + 优先级 + 短路返回）
+- ✅ LLM 客户端抽象（LlmClient 接口 + MockLlmClient）
+- ✅ Function Calling 工具（query_device_history / send_alert）
+- ✅ AiMonitorService（@Async + 防御性拷贝 + Redis SETNX 去重）
+- ✅ 数据表 ai_analysis_log + alert_record
+- ✅ MQ 拓扑 ai.alert.queue（含死信）
+- ✅ 单元测试 com.example.smart_office.service.ai.RuleEngineTest（5 个用例，31ms 全过）
+- ✅ 数据一致性对账（24 = 8 WARNING + 16 CRITICAL）
+- ✅ BUG_LOG 新增 8 条（问题 77-84）
+- ✅ 9 份文档全面更新至 v1.6
+- ✅ 新建 AI_AGENT_DESIGN.md（10 章，含面试话术汇总）
 
 十四、下一步计划
 第一阶段：L1 收尾（目标：1 个月）
@@ -392,15 +484,22 @@ WebSocket 站内信推送	实时通知	⭐⭐
 7	WebSocket 站内信推送	P1	⬜
 8	仿真层班次调度 + 产线故障传导	P1	⬜
 9	简历收尾 + 投递	P0	⏳ 持续
+| 9 | **AI Agent MVP（Mock 版）** | **P0** | **✅ v1.6** |
+| 10 | **接 DeepSeek 真 API** | **P0** | **⬜ v1.7** |
 第二阶段：L2 微服务（目标：1-2 个月）
 顺序	项目	优先级	工作量
 10	微服务拆分：Nacos + Gateway + OpenFeign	P1	3-4 周
 11	链路追踪：SkyWalking	P2	1 周
-第三阶段：L3 差异化（核心目标）
-顺序	项目	优先级	工作量
-12	AI Agent 层：Function Calling + RAG + 智能监控	P0	1-2 周
-13	Agent 分层设计：规则前置 + 异常聚合 + LLM 分级调用	P0	1 周
-14	评估体系：仿真埋真值 → 精确率/召回率	P1	3 天
+### 第三阶段：L3 差异化（核心目标）
+
+| 顺序 | 项目 | 优先级 | 工作量 |
+|------|------|--------|--------|
+| 12 | **AI Agent MVP** | **P0** | **✅ v1.6** |
+| 13 | **接 DeepSeek 真 API** | **P0** | **1 天** |
+| 14 | **告警 MQ 消费者（钉钉/邮件）** | **P1** | **2 天** |
+| 15 | **RAG 文档问答** | **P1** | **1 周** |
+| 16 | **多轮工具编排** | **P1** | **1 周** |
+| 17 | **评估体系** | **P1** | **3 天** |
 分级说明
 L0 能跑：功能通，单人能用
 
@@ -447,7 +546,54 @@ Day 2 新增 8 个坑（BUG_LOG 问题 69-76）
 
 累计 76 个坑
 
-十六、文档清单（9 份）
+## 十六、Day 3 复盘（v1.6）
+
+### 完成的核心闭环
+
+```text
+MQTT 遥测 → TelemetryQueue → TelemetryBatchWriter（攒批 + 双写）
+                                    ↓
+                            MySQL 入库后（异步）
+                                    ↓
+                            AI Agent（规则引擎 + LLM 研判）
+                                    ↓
+                ┌──────────────────┼──────────────────┐
+                ↓                  ↓                  ↓
+        查历史（MySQL）       发告警（MQ）       写日志（MySQL）
+                                    ↓
+                          ai.analysis_log + alert_record
+关键认知
+规则引擎 + LLM 双层架构：规则过滤 99% 正常数据，LLM 只处理异常片段
+
+异步边界防御性拷贝：@Async 方法入口必须拷贝 List，遍历拷贝后的集合
+
+Redis SETNX 去重：ai:agent:dedup:{deviceId}:{ruleName}，TTL 5 分钟
+
+JSON 字段不手拼：用 Jackson 序列化，不用字符串拼接
+
+MQ 消息发 JSON：Spring AMQP 默认转换器不支持 POJO
+
+测试金字塔：单元测试（毫秒级）+ 端到端测试（分钟级）+ 数据对账
+
+规则引擎覆盖缺口：故障注入 ≠ 一定触发规则，要看物理演化是否到阈值
+
+数据驱动迭代：从实际数据中发现规则覆盖缺口
+
+数据指标
+单元测试：5 个用例，31ms 全过
+
+端到端：注入 10 个故障，AI Agent 处理 8 个
+
+数据对账：24 条 AI 分析 = 8 WARNING + 16 CRITICAL
+
+告警：16 条（8 TEMP_GT_95 + 8 STATE_FAULT）
+
+踩坑数量
+Day 3 新增 8 个坑（BUG_LOG 问题 77-84）
+
+累计 84 个坑
+
+十六、文档清单（10 份）
 文档	用途	版本
 README.md	项目说明、快速启动	v1.5
 API.md	接口文档	v1.5
@@ -458,3 +604,4 @@ BUG_LOG.md	踩坑日志（76 条）	v1.5
 PROGRESS.md	项目进度与架构蓝图	v1.5
 ARCHITECTURE.md	架构与原理笔记	v1.5
 RBAC_DESIGN.md	RBAC 权限模型设计	v1.4
+| **AI_AGENT_DESIGN.md** | **AI Agent 设计文档** | **v1.0（新增）** |

@@ -1,9 +1,9 @@
 markdown
 # Smart-Office 企业级智慧协同办公平台
 
-基于 SpringBoot 3 + SpringCloud 2023 + MyBatis-Plus + MySQL + Redis + RabbitMQ + EMQX + Redisson + Nacos + TDengine + Prometheus + Grafana 的企业级后端系统。
+基于 SpringBoot 3 + SpringCloud 2023 + MyBatis-Plus + MySQL + Redis + RabbitMQ + EMQX + Redisson + Nacos + TDengine + Prometheus + Grafana **+ DeepSeek API** 的企业级后端系统。
 
-**多模块 Maven 工程**（`smart-office-app` 业务模块 + `smart-office-simulation` 设备仿真模块），已实现 Docker Compose 一键部署、MQTT 工业物联网数据链路（QoS 1 + 持久会话 + 补发 + 幂等 + 批量插入 + 死信）、审批流延迟队列、分布式锁、三级权限管理、审计日志、数据权限、Nacos 配置管理、Prometheus + Grafana 监控、**MySQL + TDengine 时序库双写（数据一致性已验证）**。
+**多模块 Maven 工程**（`smart-office-app` 业务模块 + `smart-office-simulation` 设备仿真模块），已实现 Docker Compose 一键部署、MQTT 工业物联网数据链路（QoS 1 + 持久会话 + 补发 + 幂等 + 批量插入 + 死信）、审批流延迟队列、分布式锁、三级权限管理、审计日志、数据权限、Nacos 配置管理、Prometheus + Grafana 监控、MySQL + TDengine 时序库双写（数据一致性已验证）、**AI Agent 智能监控（规则引擎 + Function Calling + 告警去重）**。
 
 ---
 
@@ -22,6 +22,7 @@ markdown
 | 配置中心 | Nacos 2.3.2 |
 | 监控 | Prometheus + Grafana |
 | 工业物联网 | EMQX (MQTT Broker), Eclipse Paho MQTT Client 1.2.5 |
+| **AI 层** | **DeepSeek API, Function Calling, 规则引擎, LLM 客户端抽象** |
 | 容器化 | Docker Compose + WSL 2 |
 | 构建工具 | Maven 3.9+ |
 | 版本管理 | Git + Gitee |
@@ -39,9 +40,16 @@ smart-office (父 pom)
 │       ├── config                  (MqttConfig, RabbitMQConfig, MybatisPlusConfig, WebConfig, ...)
 │       ├── controller              (UserController, ApprovalController)
 │       ├── entity                  (SysUser, SysRole, DeviceTelemetry, dto/, ...)
+│       │   └── ai                  (AiAnalysisLog, AlertRecord)          ★ v1.6 新增
 │       ├── interceptor             (JwtInterceptor)
 │       ├── mapper                  (XXXMapper)
-│       ├── service                 (MqttSubscriber, TelemetryQueue, TelemetryBatchWriter, TdengineWriteService, ...)
+│       │   └── ai                  (AiAnalysisLogMapper, AlertRecordMapper)  ★ v1.6 新增
+│       ├── service
+│       │   ├── ai                  (AiMonitorService, RuleEngine, LlmClient, MockLlmClient, AiToolExecutor)  ★ v1.6 新增
+│       │   ├── MqttSubscriber
+│       │   ├── TelemetryQueue
+│       │   ├── TelemetryBatchWriter
+│       │   └── TdengineWriteService
 │       └── utils                   (JwtUtils)
 │
 ├── smart-office-simulation         设备仿真模块（独立运行，不部署生产）
@@ -124,6 +132,39 @@ app 启动自动建超表（CREATE STABLE IF NOT EXISTS telemetry ...）
 
 MySQL 加联合索引 idx_device_time (device_id, report_time)，EXPLAIN 验证走索引
 
+★ AI Agent 智能监控（v1.6 新增）
+规则引擎（RuleEngine）：4 条规则，覆盖工业设备核心异常维度
+
+温度 > 95℃ → CRITICAL
+
+温度 > 85℃ → WARNING
+
+振动 > 10 mm/s → CRITICAL
+
+状态 == FAULT → CRITICAL
+
+短路返回 + 优先级（FAULT > 温度 > 振动 > 预警）
+
+LLM 客户端抽象（LlmClient）：接口 + Mock 实现（MockLlmClient），可无缝替换为 DeepSeek
+
+Function Calling 工具（AiToolExecutor）
+
+query_device_history(deviceId, limit) —— 查设备历史遥测
+
+send_alert(deviceId, level, reason) —— 写 MySQL + 发 RabbitMQ
+
+主 Agent（AiMonitorService）：@Async 异步处理 + Redis SETNX 去重（5 分钟冷却）+ 防御性拷贝
+
+挂载点：TelemetryBatchWriter.flush() → MySQL 入库后 → AI Agent（异步，不阻塞主链路）
+
+数据表：ai_analysis_log（AI 分析日志）+ alert_record（告警记录）
+
+MQ 拓扑：ai.alert.queue（含死信队列）
+
+单元测试：5 个用例覆盖规则引擎所有分支（JUnit 5，全过，31ms）
+
+数据对账：24 条 AI 分析 = 8 WARNING + 16 CRITICAL（8 TEMP_GT_95 + 8 STATE_FAULT），逐层可追溯
+
 设备仿真（smart-office-simulation）
 配置驱动：支持 10 / 100 / 1000 台设备
 
@@ -157,6 +198,8 @@ MySQL 加联合索引 idx_device_time (device_id, report_time)，EXPLAIN 验证�
 RabbitMQ 异步解耦（注册后异步通知）
 
 RabbitMQ 延迟队列（TTL + 死信队列，审批超时提醒）
+
+AI 告警队列（含死信队列）
 
 生产者 + 消费者完整链路
 
@@ -199,7 +242,7 @@ Docker Compose 编排：一键启动 9 个服务
 
 Git + Gitee 版本管理，.gitignore 排除 target/、data/、日志
 
-完整的 8 份项目文档
+完整的 9 份项目文档（新增 docs/AI_AGENT_DESIGN.md）
 
 快速启动
 1. 打包
@@ -270,18 +313,21 @@ inject PRESS-01-01 OVERHEAT
 3	TDengine 双写	P0	✅
 4	MQTT 持久会话 + 补发	P0	✅
 5	MySQL 索引 + P0 优化	P0	✅
-6	时序库冷热分离	P0	⬜
-7	WebSocket 站内信推送	P1	⬜
-8	仿真层班次调度 + 产线故障传导	P1	⬜
+6	AI Agent MVP（Mock 版）	P0	✅ v1.6
+7	接 DeepSeek 真 API	P0	⬜
+8	时序库冷热分离	P0	⬜
+9	WebSocket 站内信推送	P1	⬜
+10	仿真层班次调度 + 产线故障传导	P1	⬜
 第二阶段：L2 微服务
 顺序	项目	优先级	工作量
-9	微服务拆分：Nacos + Gateway + OpenFeign	P1	3-4 周
-10	链路追踪：SkyWalking	P2	1 周
+11	微服务拆分：Nacos + Gateway + OpenFeign	P1	3-4 周
+12	链路追踪：SkyWalking	P2	1 周
 第三阶段：L3 差异化（核心目标）
 顺序	项目	优先级	工作量
-11	AI Agent 层：Function Calling + RAG + 智能监控	P0	1-2 周
-12	Agent 分层设计：规则前置 + 异常聚合 + LLM 分级调用	P0	1 周
-13	评估体系：仿真埋真值 → 精确率/召回率	P1	3 天
+13	AI Agent RAG 文档问答	P0	1 周
+14	Agent 多轮工具编排	P0	1 周
+15	告警 MQ 消费者（钉钉/邮件）	P1	3 天
+16	评估体系：精确率/召回率	P1	3 天
 分级说明
 L0 能跑：功能通，单人能用
 
@@ -307,3 +353,5 @@ docs/PROGRESS.md：项目进度与架构蓝图
 docs/ARCHITECTURE.md：架构与原理笔记
 
 docs/RBAC_DESIGN.md：RBAC 权限模型设计
+
+docs/AI_AGENT_DESIGN.md：AI Agent 设计文档（v1.6 新增）

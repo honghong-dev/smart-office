@@ -1,8 +1,8 @@
 # Smart-Office 开发环境清单
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 
 本文档记录开发 Smart-Office 项目所需的所有软件、工具、端口配置和快速换机指南。
 
@@ -15,6 +15,7 @@
 | v1.2 | 2026-10-04 | Redis/Nacos 命令 |
 | v1.3 | 2026-10-05 | TDengine、Prometheus |
 | v1.5 | 2026-10-09 | 多模块 + 仿真器 + Git/Gitee + EMQX 参数 + 持久会话 |
+| **v1.6** | **2026-10-13** | **AI Agent 配置（DeepSeek API Key）；AI 相关表/Redis key 清理** |
 
 ---
 
@@ -29,6 +30,8 @@
 | **Git + Gitee** | **代码版本控制（Gitee 用户名 `xiao-hongh`）** |
 | Docker Desktop | 容器化运行环境 |
 | 浏览器 | 访问 Nacos / Prometheus / Grafana / EMQX Dashboard |
+| **DeepSeek API** | **AI Agent 的 LLM 调用（当前用 Mock，生产替换为 DeepSeek）** |
+| **JUnit 5** | **AI Agent 单元测试（`spring-boot-starter-test` 已含）** |
 
 ---
 
@@ -332,6 +335,109 @@ data/
 deploy/data/
 *.bak
 .env
+
+## 十二点五、AI Agent 配置（v1.6 新增）
+
+### 12.5.1 环境变量
+
+**本地 IDEA 跑（用 Mock，无需 API Key）：**
+```yaml
+ai:
+  llm:
+    provider: mock
+接 DeepSeek 真 API（生产 / 演示）：
+
+方式 A：环境变量
+
+bash
+# Windows PowerShell
+$env:DEEPSEEK_API_KEY="sk-xxxxxx"
+方式 B：Nacos 配置（smart-office-docker.yml）
+
+yaml
+ai:
+  llm:
+    provider: deepseek
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:sk-xxxxxx}
+      base-url: https://api.deepseek.com
+      model: deepseek-chat
+方式 C：Docker Compose environment
+
+yaml
+smart-office:
+  environment:
+    - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+    - AI_LLM_PROVIDER=deepseek
+12.5.2 AI 相关数据库表（v1.6 新增）
+已初始化（deploy/sql/ 里含）：
+
+ai_analysis_log：AI 分析日志
+
+alert_record：告警记录
+
+如果 MySQL 容器已启动过，需手动执行：
+
+bash
+docker exec -i smart-office-mysql mysql -uroot -p123456 smart_office < deploy/sql/v1.6_ai_tables.sql
+验证：
+
+bash
+docker exec -it smart-office-mysql mysql -uroot -p123456 -e "USE smart_office; SHOW TABLES LIKE 'ai%'; SHOW TABLES LIKE 'alert%';"
+期望： 看到 ai_analysis_log 和 alert_record。
+
+12.5.3 AI 相关 Redis key
+Key 模式	用途	TTL
+ai:agent:dedup:{deviceId}:{ruleName}	AI Agent 去重（防告警风暴）	5 分钟
+查看：
+
+bash
+docker exec -it smart-office-redis redis-cli -p 6379 KEYS "ai:agent:dedup:*"
+清空（调试时）：
+
+bash
+docker exec -it smart-office-redis redis-cli -p 6379 --scan --pattern "ai:agent:dedup:*" | xargs -r docker exec -i smart-office-redis redis-cli -p 6379 DEL
+12.5.4 AI 相关 RabbitMQ 队列
+队列	用途
+ai.alert.queue	AI 告警事件（待扩消费者）
+ai.alert.dlx.queue	AI 告警死信队列
+查看： RabbitMQ 管理台（http://localhost:15673）→ Queues
+
+清空堆积：
+
+bash
+docker exec -it smart-office-rabbitmq rabbitmqctl purge_queue ai.alert.queue
+12.5.5 AI Agent 验证（跑通检查）
+1. 单元测试（毫秒级）：
+
+IDEA 里右键 com.example.smart_office.service.ai.RuleEngineTest → Run。
+
+期望： 5 tests passed。
+
+2. 端到端（秒级）：
+
+仿真层控制台注入故障：
+
+text
+inject WELD-02-01 OVERHEAT
+等 30 秒-1 分钟，查表：
+
+bash
+docker exec -it smart-office-mysql mysql -uroot -p123456 -e "USE smart_office; SELECT COUNT(*) FROM ai_analysis_log; SELECT COUNT(*) FROM alert_record;"
+期望： 数字增长。
+
+3. 数据对账：
+
+bash
+docker exec -it smart-office-mysql mysql -uroot -p123456 -e "USE smart_office; SELECT trigger_rule, analysis_result, COUNT(*) FROM ai_analysis_log GROUP BY trigger_rule, analysis_result;"
+期望：
+
+text
+TEMP_GT_85   | WARNING  | N
+TEMP_GT_95   | CRITICAL | N
+STATE_FAULT  | CRITICAL | N
+对账：ai_analysis_log 总数 - alert_record 总数 = WARNING 数量。
+
 十三、压测前清理清单
 每次压测前，按顺序全清，避免数据对不上：
 
@@ -346,6 +452,11 @@ EMQX 会话：EMQX Dashboard 删除 smart-office-backend，或 docker restart sm
 SpringBoot：重启项目，清空内存队列和批量缓冲区
 
 只清数据库不够，EMQX 的离线会话会补发消息，导致数据比预期多。TDengine 也要一起清。
+
+AI 相关表（v1.6 新增）
+- MySQL：`TRUNCATE TABLE ai_analysis_log;` 和 `TRUNCATE TABLE alert_record;`
+- Redis：清 `ai:agent:dedup:*` key
+- RabbitMQ：清 `ai.alert.queue`（`rabbitmqctl purge_queue ai.alert.queue`）
 
 十四、快速换机指南
 安装 JDK 17 + Maven + Docker Desktop + Git。

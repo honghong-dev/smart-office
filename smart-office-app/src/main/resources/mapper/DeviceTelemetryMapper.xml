@@ -4,10 +4,10 @@
 <mapper namespace="com.example.smart_office.mapper.DeviceTelemetryMapper">
 
     <insert id="insertBatch">
-        INSERT INTO device_telemetry (device_id, temperature, report_time)
+        INSERT INTO device_telemetry (device_id, temperature, vibration, speed, state, report_time)
         VALUES
         <foreach collection="list" item="item" separator=",">
-            (#{item.deviceId}, #{item.temperature}, #{item.reportTime})
+            (#{item.deviceId}, #{item.temperature}, #{item.vibration}, #{item.speed}, #{item.state}, #{item.reportTime})
         </foreach>
     </insert>
 

@@ -1,9 +1,9 @@
 markdown
 # Smart-Office API 接口文档
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 
 ## 变更记录
 
@@ -15,12 +15,15 @@ markdown
 | v1.3 | 2026-10-05 | 补 Nacos 配置管理、Prometheus 监控；修正 Broker 地址 |
 | v1.4 | 2026-10-05 | 补 TDengine 时序库双写；修正 MQTT 性能指标 |
 | v1.5 | 2026-10-09 | 多模块重构；MQTT 持久会话 + 补发；Topic 改 /telemetry；新增设备仿真模块；新增 Agent 规划 |
+| **v1.6** | **2026-10-13** | **AI Agent MVP：规则引擎 + Function Calling + 工具执行 + 告警去重；新增 ai_analysis_log / alert_record 表；新增 ai.alert.queue** |
 
 **文档说明**：本文档记录 Smart-Office 项目所有已开发接口。每新增一个接口，需同步更新本文档。
 
 **配置来源**：配置从 Nacos 拉取（Data ID: `smart-office-docker.yml`）。
 
 **时序库**：TDengine 3.3（REST 连接 `jdbc:TAOS-RS://localhost:6041/smart_office`），用于设备遥测数据存储，与 MySQL 双写。
+
+**AI 层**：DeepSeek API（当前用 Mock 实现），Function Calling，规则引擎前置过滤。
 
 **基础路径**：
 - 本地 IDEA：http://localhost:8080
@@ -29,8 +32,6 @@ markdown
 **统一返回格式**：所有接口均返回 Result<T> 结构：`{ "code": 200, "msg": "操作成功", "data": {...} }`
 
 **鉴权说明**：除登录、注册接口外，其他接口均需在请求头携带 `Authorization: Bearer <Token>`
-
----
 
 ## 零、全局契约（Global Contract）
 
@@ -61,6 +62,13 @@ markdown
 - 普通接口：调用方超时建议 3s，不自动重试
 - 审批处理：超时 5s，幂等可重试
 - MQTT 上报：QoS 1，Broker 负责重投，消费端幂等
+
+### 0.5 AI Agent 契约（v1.6 新增）
+
+- **AI Agent 无对外 HTTP 接口**：以内嵌服务形式挂载在 `TelemetryBatchWriter.flush()` 之后
+- **触发方式**：MQTT 遥测数据入库后，异步调用（`@Async`），不阻塞主链路
+- **降级**：规则引擎不命中 → 不调 LLM；LLM 调用失败 → 只记录日志，不影响主链路
+- **去重**：Redis SETNX，key = `ai:agent:dedup:{deviceId}:{ruleName}`，TTL 5 分钟
 
 ---
 
@@ -648,6 +656,76 @@ Group：DEFAULT_GROUP
 
 详见 ARCHITECTURE.md 双写架构章节
 
+### 5.6 AI Agent 智能监控（v1.6 新增）
+
+**触发链路**：
+MQTT 遥测 → TelemetryQueue → TelemetryBatchWriter.flush()
+↓
+MySQL 入库后（异步）
+↓
+AiMonitorService.onBatchFlushed(batch)
+↓
+┌─────────────┴─────────────┐
+↓ ↓
+RuleEngine 判断 未命中 → 跳过
+↓
+Redis SETNX 去重
+↓
+组装上下文 → LlmClient.chat()
+↓
+工具调用（AiToolExecutor）
+↓
+┌────────────────┼────────────────┐
+↓ ↓ ↓
+query_device_history send_alert (扩展)
+↓ ↓
+MySQL 查询 写 alert_record + 发 MQ
+↓
+写 ai_analysis_log
+
+**规则定义（RuleEngine）**：
+| 规则名 | 条件 | 级别 |
+|--------|------|------|
+| STATE_FAULT | state == FAULT | CRITICAL |
+| TEMP_GT_95 | temperature > 95 | CRITICAL |
+| VIB_GT_10 | vibration > 10 | CRITICAL |
+| TEMP_GT_85 | temperature > 85 | WARNING |
+
+**优先级**：STATE_FAULT > TEMP_GT_95 > VIB_GT_10 > TEMP_GT_85（短路返回）
+
+**工具清单（AiToolExecutor）**：
+| 工具名 | 入参 | 行为 |
+|--------|------|------|
+| query_device_history | deviceId, limit | 查 MySQL device_telemetry 最近 N 条 |
+| send_alert | deviceId, level, reason, aiLogId | 写 alert_record + 发 ai.alert.queue |
+
+**数据表**：
+- `ai_analysis_log`：AI 分析日志（device_id, trigger_rule, trigger_value, context_json, llm_response, tool_calls, analysis_result, created_at）
+- `alert_record`：告警记录（device_id, level, reason, source, ai_log_id, status, created_at）
+
+**MQ 拓扑**：
+- Exchange：`ai.alert.exchange`（DirectExchange）
+- Queue：`ai.alert.queue`（durable，含死信）
+- RoutingKey：`ai.alert`
+- 死信：`ai.alert.dlx.queue` + `ai.alert.dlx.exchange`
+
+**去重机制**：
+- Redis SETNX：key = `ai:agent:dedup:{deviceId}:{ruleName}`
+- TTL：5 分钟
+- 语义：同一设备同一规则 5 分钟内只处理一次，避免告警风暴
+
+**异步与并发**：
+- `@Async` 异步执行，不阻塞主链路
+- 入口做防御性拷贝（`new ArrayList<>(batch)`），避免 `ConcurrentModificationException`
+
+**降级与容错**：
+- 规则不命中 → 不调 LLM
+- LLM 调用失败 → 只记录日志，不影响主链路
+- MQ 发送失败 → 只记录日志，MySQL 已写入
+- Redis 不可用 → 去重失效，可能产生重复告警（可接受降级）
+
+详见 `docs/AI_AGENT_DESIGN.md`。
+
 六、全局返回码
 6.1 HTTP 状态码
 code	说明
@@ -673,31 +751,38 @@ bizCode	说明	对应场景
 30003	审批单正在处理中	handle（锁冲突）
 40001	MQTT 消息解析失败	死信
 40002	设备数据入库失败	死信
+
 七、接口状态汇总
-序号	接口名称	请求方式	路径	状态
-1	用户登录	POST	/api/user/login	✅
-2	用户注册	POST	/api/user/register	✅（自动分配 USER 角色）
-3	用户分页查询	GET	/api/user/page	✅ 数据权限
-4	查询用户权限	GET	/api/user/permissions/{userId}	✅
-5	分配用户角色	POST	/api/user/assignRole	✅ 三级管理
-6	分配用户部门	POST	/api/user/assignDept	✅ 数据权限
-7	提交审批	POST	/api/approval/submit	✅
-8	处理审批	POST	/api/approval/handle	✅ 分布式锁
-9	审计日志查询	GET	/api/audit/page	✅
-10	设备数据上报	MQTT	factory/device/+/telemetry	✅ 持久会话 + 补发 + TDengine 双写
-11	消息处理状态查询	GET	/api/mqtt/message/log	⬜ 规划中
+| 序号 | 接口名称 | 请求方式 | 路径 | 状态 |
+|------|----------|----------|------|------|
+| 1 | 用户登录 | POST | /api/user/login | ✅ |
+| 2 | 用户注册 | POST | /api/user/register | ✅（自动分配 USER 角色）|
+| 3 | 用户分页查询 | GET | /api/user/page | ✅ 数据权限 |
+| 4 | 查询用户权限 | GET | /api/user/permissions/{userId} | ✅ |
+| 5 | 分配用户角色 | POST | /api/user/assignRole | ✅ 三级管理 |
+| 6 | 分配用户部门 | POST | /api/user/assignDept | ✅ 数据权限 |
+| 7 | 提交审批 | POST | /api/approval/submit | ✅ |
+| 8 | 处理审批 | POST | /api/approval/handle | ✅ 分布式锁 |
+| 9 | 审计日志查询 | GET | /api/audit/page | ✅ |
+| 10 | 设备数据上报 | MQTT | factory/device/+/telemetry | ✅ 持久会话 + 补发 + TDengine 双写 |
+| 11 | **AI Agent 智能监控** | **内嵌（无 HTTP）** | **TelemetryBatchWriter.flush() 后触发** | **✅ v1.6** |
+| 12 | 消息处理状态查询 | GET | /api/mqtt/message/log | ⬜ 规划中 |
+
 八、待开发接口（规划中）
-序号	接口名称	请求方式	路径	预计版本
-1	用户登出	POST	/api/user/logout	v1.6
-2	修改用户信息	PUT	/api/user/update	v1.6
-3	删除用户	DELETE	/api/user/{id}	v1.6
-4	角色列表查询	GET	/api/role/list	v1.6
-5	待我审批列表	GET	/api/approval/todo	v1.6
-6	设备遥测数据查询	GET	/api/device/telemetry	v1.6
-7	死信消息查询	GET	/api/mqtt/dead-letter	v1.6
-8	部门列表查询	GET	/api/dept/list	v1.6
-9	AI Agent 监控接口	POST	/api/agent/analyze	v2.0（AI 层）
-10	死信重试接口	POST	/api/mqtt/dead-letter/retry	v1.6
+| 序号 | 接口名称 | 请求方式 | 路径 | 预计版本 |
+|------|----------|----------|------|----------|
+| 1 | 用户登出 | POST | /api/user/logout | v1.7 |
+| 2 | 修改用户信息 | PUT | /api/user/update | v1.7 |
+| 3 | 删除用户 | DELETE | /api/user/{id} | v1.7 |
+| 4 | 角色列表查询 | GET | /api/role/list | v1.7 |
+| 5 | 待我审批列表 | GET | /api/approval/todo | v1.7 |
+| 6 | 设备遥测数据查询 | GET | /api/device/telemetry | v1.7 |
+| 7 | 死信消息查询 | GET | /api/mqtt/dead-letter | v1.7 |
+| 8 | 部门列表查询 | GET | /api/dept/list | v1.7 |
+| 9 | **AI 分析日志查询** | **GET** | **/api/agent/log/page** | **v1.7** |
+| 10 | **告警记录查询** | **GET** | **/api/alert/page** | **v1.7** |
+| 11 | 死信重试接口 | POST | /api/mqtt/dead-letter/retry | v1.7 |
+
 九、设备仿真模块（Simulation，独立部署）
 说明：smart-office-simulation 是独立的 Maven 模块，模拟 10/100/1000 台工业设备，通过 MQTT 发送遥测数据。生产环境不部署，只在开发和演示时启动。
 
@@ -753,3 +838,43 @@ simulation:
 
 零代码耦合，靠 MQTT 协议通信
 详见 ARCHITECTURE.md 设备仿真章节
+
+## 十、AI Agent 模块（内嵌服务，v1.6 新增）
+
+**说明**：AI Agent 不是独立的 HTTP 服务，而是内嵌在 `smart-office-app` 的异步服务，挂载在遥测数据入库之后。
+
+**触发流程**：
+1. MQTT 遥测 → `TelemetryQueue` 攒批
+2. `TelemetryBatchWriter.flush()` 批量入库 MySQL + TDengine
+3. 入库成功后，异步调用 `AiMonitorService.onBatchFlushed(batch)`
+4. 规则引擎逐条判断（4 条规则）
+5. 命中 → Redis SETNX 去重 → 组装上下文 → 调 `LlmClient.chat()`
+6. LLM 返回后 → `AiToolExecutor` 执行工具（查历史 / 发告警）
+7. 写 `ai_analysis_log` 记录完整分析过程
+
+**关键类**：
+| 类 | 职责 |
+|----|------|
+| `RuleEngine` | 规则匹配（4 条规则 + 优先级）|
+| `LlmClient` | LLM 客户端接口（Mock / DeepSeek 实现可替换）|
+| `MockLlmClient` | Mock 实现（开发调试用）|
+| `AiToolExecutor` | 工具执行器（query_device_history / send_alert）|
+| `AiMonitorService` | 主 Agent（编排 + 异步 + 去重）|
+
+**配置项**：
+```yaml
+ai:
+  llm:
+    provider: mock   # mock / deepseek
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: https://api.deepseek.com
+性能指标：
+
+单元测试 5 个用例，31ms 全过
+
+数据对账：24 条 AI 分析 = 8 WARNING + 16 CRITICAL（8 TEMP_GT_95 + 8 STATE_FAULT）
+
+去重生效：同设备同规则 5 分钟内只处理一次
+
+详见：docs/AI_AGENT_DESIGN.md

@@ -1296,3 +1296,249 @@ TDengine 超表	3166
 死信	0
 补发入库耗时	< 1 秒
 结论： MQTT 持久会话 + offline 队列补发 + MySQL/TDengine 双写，端到端数据零丢失。
+
+
+## 问题 77：Docker 迁移后端口偏移，客户端连不上
+
+**现象**：Docker Desktop 数据从 C 盘迁到 D 盘后，DataGrip 连 MySQL 报 "Communications link failure"，但容器显示 `Up (healthy)`。
+
+**根因**：Docker Compose 端口映射配置为 `3307:3306`，宿主机端口是 3307，不是默认 3306。客户端连默认端口失败。
+
+**解决**：
+1. 客户端改用宿主机端口（MySQL 3307、Redis 6380、RabbitMQ 5673、EMQX 1884）
+2. `docker port <container>` 确认实际映射
+3. `Test-NetConnection` 验证端口可达
+
+**面试话术**：Docker 端口映射格式 `宿主机端口:容器端口`，多实例部署时常用端口偏移避免冲突，排查时要分清"宿主机端口"和"容器内端口"。
+
+
+## 问题 78：MQTT 持久会话导致路由表错乱（核心坑）
+
+**现象**：
+- 仿真层在发（EMQX 流入 103 msg/s）
+- app 订阅记录在（Subscriptions 表显示 `smart-office-backend` 订阅 `factory/device/+/telemetry`）
+- **但 EMQX 流出 0，app 收不到任何消息**
+- MQTTX 手动发 9 条，自己订阅都收不到
+
+**根因**：
+- app 用 `cleanSession=false` + 固定 clientId `smart-office-backend`
+- app 频繁重启（改代码调试），每次用同一 clientId 重连
+- EMQX 保留旧会话 2 小时（`session_expiry_interval=7200`）
+- **旧会话的订阅残留在 EMQX 路由表里，新连接的消息被投递给"已断开的旧连接"**
+- 结果：订阅看起来在、消息看起来有、但投递目标是死的
+
+**解决**：
+1. **短期**：EMQX Dashboard → Clients → 踢掉"未连接"的僵尸客户端
+2. **根治**：改 `cleanSession=true`（放弃离线补发），或 clientId 加时间戳（每次新连接）
+3. **生产环境**：用固定 clientId + `cleanSession=false`，但需在应用关闭时**主动 disconnect + 清理会话**
+
+**面试话术**：MQTT 持久会话机制下，`clientId` 是会话的唯一标识。频繁重启 + 不清理旧会话，会导致 EMQX 路由表指向死连接，消息投递失败但监控指标显示"订阅存在"。解决方式是根据业务选择 `cleanSession` 策略，并配合会话生命周期管理。
+
+
+## 问题 79：MQTT 扩字段后 NULL 值
+
+**现象**：`device_telemetry` 表加了 `vibration/speed/state` 三列后，新数据三列都是 NULL。
+
+**根因**：
+1. 仿真层 payload 确实有这三个字段（`TelemetrySample` 完整序列化）
+2. 但 app 端解析逻辑没同步更新（`parseAndCheckIdempotent` 没 set 新字段）
+3. `insertBatch` XML 没加新列
+4. 实体类没加新字段
+
+**解决**：四处都要改
+1. 实体 `DeviceTelemetry` 加字段
+2. `parseAndCheckIdempotent` 解析 payload 新字段
+3. Mapper XML `insertBatch` 加列
+4. 数据库 `ALTER TABLE` 加列
+
+**面试话术**：字段变更要保证"实体-DAO-SQL-数据库"四处一致，否则会出现"数据写入成功但字段为 NULL"的隐蔽 bug。
+
+
+## 问题 80：AI Agent 异步处理抛 ConcurrentModificationException
+
+**现象**：AI Agent 处理批量遥测数据时，抛 `java.util.ConcurrentModificationException`，堆栈指向 `AiMonitorService.onBatchFlushed(AiMonitorService.java:52)`。
+
+**根因**：
+- `AiMonitorService.onBatchFlushed()` 加了 `@Async`，异步执行
+- 主线程 `TelemetryBatchWriter.flush()` 调用后立即 `batch.clear()`
+- 异步线程还在遍历同一个 `List` 引用 → 迭代器失效
+
+**解决**：
+1. 异步方法入口做防御性拷贝：`List<DeviceTelemetry> snapshot = new ArrayList<>(batch);`
+2. **关键**：`for` 循环遍历 `snapshot`，不是 `batch`（拷贝后必须用新集合）
+3. 常见坑：拷了 `snapshot` 但 `for` 循环还是 `batch`，白拷
+
+**面试话术**：`@Async` 方法拿到的是引用传递，主线程如果在异步执行期间修改集合（如 `batch.clear()`）会抛 CME。工业级做法是在异步边界做防御性拷贝，且遍历时必须用拷贝后的集合。
+
+**代码**：
+```java
+@Async
+public void onBatchFlushed(List<DeviceTelemetry> batch) {
+    if (batch == null || batch.isEmpty()) return;
+    List<DeviceTelemetry> snapshot = new ArrayList<>(batch);   // ★ 拷贝
+    for (DeviceTelemetry t : snapshot) {   // ★ 遍历拷贝
+        // ...
+    }
+}
+问题 81：MySQL JSON 字段写入非法 JSON
+现象：
+
+text
+Data truncation: Invalid JSON text: "Invalid value." at position 1 
+in value for column 'ai_analysis_log.tool_calls'
+根因：
+
+ai_analysis_log.tool_calls 字段是 MySQL JSON 类型
+
+手拼 JSON："[send_alert(id=" + alertId + ")]"
+
+这不是合法 JSON（缺引号、缺冒号）
+
+解决：用 Jackson 序列化对象，不手拼字符串。
+
+java
+List<Map<String, Object>> toolCallsList = new ArrayList<>();
+if (alertId != null) {
+    Map<String, Object> call = new HashMap<>();
+    call.put("tool", "send_alert");
+    call.put("alertId", alertId);
+    toolCallsList.add(call);
+}
+logEntity.setToolCalls(objectMapper.writeValueAsString(toolCallsList));
+// 输出：[{"tool":"send_alert","alertId":123}] —— 合法 JSON
+面试话术：MySQL 的 JSON 类型字段会严格校验格式，非合法 JSON 直接拒绝。工业级做法是用 Jackson/Gson 序列化对象生成 JSON，不手拼字符串——手拼容易漏引号、逗号，难以维护。
+
+问题 82：Spring AMQP 默认转换器不支持 POJO
+现象：
+
+text
+java.lang.IllegalArgumentException: SimpleMessageConverter only supports 
+String, byte[] and Serializable payloads, received: 
+com.example.smart_office.entity.ai.AlertRecord
+根因：
+
+Spring AMQP 默认用 SimpleMessageConverter
+
+它只支持 String、byte[]、Serializable 三种类型
+
+直接传 POJO（AlertRecord）→ 类型不匹配 → 抛异常
+
+解决：
+
+方案 A（推荐）：发 JSON 字符串
+
+java
+String json = objectMapper.writeValueAsString(record);
+rabbitTemplate.convertAndSend(exchange, routingKey, json);
+方案 B：让 AlertRecord 实现 Serializable（不推荐，跨语言差）
+
+为什么推荐 JSON：
+
+跨语言兼容（未来 Python/Go 消费者也能读）
+
+RabbitMQ 管理台可读（能看到明文）
+
+字段增删无需改序列化机制
+
+面试话术：Spring AMQP 默认 SimpleMessageConverter 只支持 String/byte[]/Serializable。工业级做法是发 JSON 字符串，好处是跨语言兼容、管理台可读、字段演进灵活。或配置 Jackson2JsonMessageConverter 做全局转换。
+
+问题 83：告警风暴（同一设备重复告警）
+现象：
+
+一台设备持续异常，ai_analysis_log 里同一设备有 10 条记录
+
+alert_record 里同一设备有 10 条告警
+
+日志刷屏、MySQL 刷屏、RabbitMQ 刷屏
+
+根因：
+
+规则引擎无去重，每条数据独立判断
+
+设备持续异常时，每批数据（1 秒 1 批）都命中同一规则
+
+结果：1 分钟产生 60 条重复告警
+
+解决：Redis SETNX + TTL（5 分钟）做去重。
+
+java
+String dedupKey = "ai:agent:dedup:" + deviceId + ":" + ruleName;
+Boolean isFirst = redisTemplate.opsForValue()
+        .setIfAbsent(dedupKey, "1", Duration.ofMinutes(5));
+if (Boolean.FALSE.equals(isFirst)) {
+    continue;   // 5 分钟内已处理，跳过
+}
+语义：
+
+首次命中 → SETNX 成功 → 处理 + 告警
+
+5 分钟内重复命中 → SETNX 失败 → 跳过
+
+5 分钟后 → TTL 过期 → 允许重新触发（应对"恢复后再次异常"）
+
+TTL 选择依据：
+
+太长 → "恢复后再次异常"无法触发
+
+太短 → 告警仍风暴
+
+5 分钟是工业场景经验值（覆盖一次典型故障演化周期）
+
+面试话术：工业告警系统必须有"去重冷却"机制，避免告警风暴。Redis SETNX + TTL 实现分布式去重，key 是 ai:agent:dedup:{deviceId}:{ruleName}，TTL 5 分钟。这样既避免刷屏，又保证"恢复后再次异常"能重新触发。
+
+问题 84：规则引擎覆盖不全（数据追溯发现）
+现象：注入 10 个故障，AI Agent 只处理 8 台设备。CONVEYOR-01-01 和 ASSEMBLY-01-01 无记录。
+
+根因（设备级追溯）：
+
+CONVEYOR-01-01 注入 BEARING_WEAR（轴承磨损）：振动上升慢，测试时间内未达 VIB_GT_10（10mm/s）阈值；温度也没到 85℃
+
+ASSEMBLY-01-01 注入 SUDDEN_FAILURE（突发断裂）：状态瞬变未触发已有规则
+
+规则引擎的三个设计缺口：
+
+振动早预警缺失：没有 VIB_GT_5（WARNING）这样的早期预警规则
+
+趋势异常检测缺失：只看单点阈值，没有"温度连续 N 次上升 > X℃"这样的趋势判断
+
+瞬时故障捕获缺失：短时间状态变化（如 RUNNING → FAULT → RUNNING）难以捕获
+
+解决方向：
+
+补规则：VIB_GT_5 → WARNING，让振动异常更早被捕获
+
+补趋势规则：滑动窗口，检测"3 分钟温度上升 > 5℃"
+
+补瞬时规则：记录状态变化历史，检测短时间内的状态迁移
+
+关键认知：
+
+故障注入 ≠ 一定触发规则：仿真层故障演化有时间维度，短时间内可能没到阈值
+
+端到端测试的局限：依赖物理演化，时间长且不稳定
+
+单元测试的必要性：构造边界值数据，毫秒级验证规则逻辑
+
+面试话术：我做数据一致性追溯时发现，注入 10 个故障，AI Agent 只处理了 8 个。追溯发现是 BEARING_WEAR（振动缓慢上升）和 SUDDEN_FAILURE（瞬态）在测试时间内未达阈值。这暴露了规则引擎的三个可优化方向：补振动早预警、加趋势检测、捕获瞬时故障。这是"用数据驱动规则迭代"的工程思路——不是设计时拍脑袋，而是从实际数据中发现规则覆盖缺口。
+
+数据对账（v1.6 AI Agent 验证）
+场景：注入 10 个故障，观察 AI Agent 处理。
+
+对账结果：
+
+规则	级别	数量	是否发告警
+TEMP_GT_85	WARNING	8	❌
+TEMP_GT_95	CRITICAL	8	✅
+STATE_FAULT	CRITICAL	8	✅
+合计		24	16 发告警
+核对：
+
+ai_analysis_log = 24 条
+
+alert_record = 16 条（8 TEMP_GT_95 + 8 STATE_FAULT）
+
+差值 = 8（WARNING 级别） ✅
+
+结论：告警分级逻辑正确，数据一致且可追溯。
+
+面试价值：体现"分层对账"思维——数据源层（故障注入数）→ 处理层（规则命中数）→ 输出层（告警数），三层逐层对账，任何一层出现差异都能定位到具体环节。

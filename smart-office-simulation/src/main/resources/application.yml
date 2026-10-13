@@ -48,6 +48,6 @@ logging:
   level:
     root: INFO
 #    com.example.smart_office.simulation: DEBUG
-    com.example.smart_office.simulation: INFO    # ← DEBUG 改成 INFO
+    com.example.smart_office.simulation: INFO       # ← DEBUG 改成 INFO
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

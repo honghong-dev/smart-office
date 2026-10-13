@@ -31,20 +31,25 @@ public class MqttConfig {
 
     @Bean
     public MqttClient mqttClient() throws Exception {
-        mqttClient = new MqttClient(broker, clientId, new MemoryPersistence());
+        MqttClient client = new MqttClient(
+                broker,
+                clientId + "-" + System.currentTimeMillis(),
+                new MemoryPersistence()
+        );
 
         MqttConnectOptions options = new MqttConnectOptions();
         options.setUserName(username);
         options.setPassword(password.toCharArray());
-//        options.setCleanSession(true);
-        options.setCleanSession(false);          // ★ 持久会话
-        options.setAutomaticReconnect(true);     // ★ 自动重连（打开）
-
+        options.setCleanSession(false);
+        options.setAutomaticReconnect(true);
         options.setConnectionTimeout(30);
         options.setKeepAliveInterval(60);
-        options.setMaxInflight(1000);   // 加这行
-        mqttClient.connect(options);
-        return mqttClient;
+        options.setMaxInflight(1000);
+
+        client.connect(options);   // ★ 用局部变量 client 连接
+
+        this.mqttClient = client;  // ★ 赋值给成员变量，给 @PreDestroy 用
+        return client;             // ★ 返回局部变量 client
     }
 
     @PreDestroy

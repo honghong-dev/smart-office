@@ -1,9 +1,9 @@
 markdown
 # Smart-Office 数据库设计文档
 
-**文档版本**：v1.5
-**最后更新**：2026-10-09
-**对应代码版本**：Smart-Office v1.5
+**文档版本**：v1.6
+**最后更新**：2026-10-13
+**对应代码版本**：Smart-Office v1.6
 
 ## 一、基本信息
 
@@ -24,6 +24,7 @@ markdown
 | v1.3 | 2026-10-05 | Nacos 库说明 |
 | v1.4 | 2026-10-05 | TDengine 时序库设计 |
 | v1.5 | 2026-10-09 | device_telemetry 加 vibration/speed/state；TDengine 超表修正；索引验证 |
+| **v1.6** | **2026-10-13** | **新增 ai_analysis_log（AI 分析日志）、alert_record（告警记录）两张表** |
 
 ---
 
@@ -230,6 +231,65 @@ idx_created_at（created_at）
 
 DeadLetterService.record() 内部 catch 所有异常，不抛（避免死信记录反而影响主流程）
 
+
+### 表 12：ai_analysis_log（AI 分析日志表）★ v1.6 新增
+
+| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
+|--------|------|----------|--------|------|
+| id | BIGINT | 否 | 自增 | 主键 ID |
+| device_id | VARCHAR(64) | 否 | 无 | 设备 ID |
+| trigger_rule | VARCHAR(128) | 否 | 无 | 触发规则名（如 TEMP_GT_95） |
+| trigger_value | VARCHAR(64) | 是 | 无 | 触发值（如 96.3） |
+| context_json | JSON | 是 | 无 | 喂给 LLM 的完整上下文 |
+| llm_response | TEXT | 是 | 无 | LLM 最终输出 |
+| tool_calls | JSON | 是 | 无 | LLM 调用的工具列表（合法 JSON） |
+| analysis_result | VARCHAR(32) | 是 | 无 | 研判结论（WARNING / CRITICAL） |
+| created_at | DATETIME | 否 | 当前时间 | 创建时间 |
+
+**索引**：
+- `idx_device_time`（device_id + created_at）：按设备 + 时间查询
+- `idx_created_at`（created_at）：按时间查询
+
+**说明**：
+- `context_json`：完整保存喂给 LLM 的上下文，可复现分析过程
+- `tool_calls`：JSON 类型，必须合法 JSON（用 Jackson 序列化，不手拼，见 BUG_LOG 问题 81）
+- `analysis_result` 与 `trigger_rule` 配合，可统计各级别触发次数
+
+**对账逻辑**：
+ai_analysis_log 总数 = WARNING 数 + CRITICAL 数
+alert_record 总数 = CRITICAL 数
+
+text
+
+### 表 13：alert_record（告警记录表）★ v1.6 新增
+
+| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
+|--------|------|----------|--------|------|
+| id | BIGINT | 否 | 自增 | 主键 ID |
+| device_id | VARCHAR(64) | 否 | 无 | 设备 ID |
+| level | VARCHAR(16) | 否 | 无 | 级别（INFO / WARNING / CRITICAL） |
+| reason | VARCHAR(512) | 否 | 无 | 告警原因 |
+| source | VARCHAR(32) | 否 | AI_AGENT | 来源（RULE / AI_AGENT） |
+| ai_log_id | BIGINT | 是 | 无 | 关联的 AI 分析日志 ID |
+| status | TINYINT | 否 | 0 | 状态（0未处理 1已处理 2已忽略） |
+| created_at | DATETIME | 否 | 当前时间 | 创建时间 |
+| handled_at | DATETIME | 是 | 无 | 处理时间 |
+| handled_by | VARCHAR(64) | 是 | 无 | 处理人 |
+
+**索引**：
+- `idx_device_time`（device_id + created_at）：按设备 + 时间查询
+- `idx_status`（status）：按状态查询（如"未处理告警"）
+- `idx_level`（level）：按级别查询
+
+**说明**：
+- `source` 区分告警来源（纯规则 / AI Agent），便于后续对比
+- `ai_log_id` 关联 `ai_analysis_log`，可追溯 AI 分析过程
+- `status` 支持告警处理流转（未处理 → 已处理 → 已忽略）
+
+**去重机制**：
+- 写入前，Redis SETNX 检查 `ai:agent:dedup:{deviceId}:{ruleName}`，TTL 5 分钟
+- 5 分钟内同一设备同一规则只写一条告警（见 BUG_LOG 问题 83）
+
 三、表关系说明
 RBAC 关系
 text
@@ -260,6 +320,33 @@ MySQL 保留设备遥测全量数据，主链路，告警依赖。
 TDengine 存时序数据（超级表 telemetry，按设备建子表），旁路，用于后续时间范围查询、看板、冷热分离。
 
 两边数据一致（100 台设备持续压测：100% 一致）。
+
+AI Agent 关系
+ai_analysis_log ←→ alert_record
+(1)                (N)
+一条 AI 分析日志可以关联多条告警记录（同一设备可能触发多级告警）。
+alert_record.ai_log_id → ai_analysis_log.id
+
+说明：
+
+AI Agent 触发规则 → 写 ai_analysis_log → 如果是 CRITICAL，写 alert_record
+
+WARNING 级别只写 ai_analysis_log，不发告警
+
+通过 ai_log_id 关联，可追溯"这条告警是哪次 AI 分析产生的"
+
+数据流：
+
+text
+MQTT 遥测 → MySQL + TDengine 双写
+         ↓
+    规则引擎命中
+         ↓
+    AI 分析（LLM）
+         ↓
+   写 ai_analysis_log
+         ↓
+   CRITICAL 级别 → 写 alert_record + 发 ai.alert.queue
 
 四、通用字段规范
 所有业务表统一包含以下字段：
@@ -455,6 +542,45 @@ CREATE TABLE mqtt_message_log (
     KEY idx_status (status),
     KEY idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MQTT消息处理日志表';
+
+
+-- ============================================
+-- v1.6 新增：AI Agent 相关表
+-- ============================================
+
+-- AI 分析日志表
+CREATE TABLE ai_analysis_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    device_id VARCHAR(64) NOT NULL COMMENT '设备ID',
+    trigger_rule VARCHAR(128) NOT NULL COMMENT '触发规则（如 TEMP_GT_95）',
+    trigger_value VARCHAR(64) COMMENT '触发值（如 96.3）',
+    context_json JSON COMMENT '喂给LLM的完整上下文',
+    llm_response TEXT COMMENT 'LLM最终输出',
+    tool_calls JSON COMMENT 'LLM调用的工具列表（合法JSON）',
+    analysis_result VARCHAR(32) COMMENT '研判结论（WARNING/CRITICAL）',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    KEY idx_device_time (device_id, created_at),
+    KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI分析日志表';
+
+-- 告警记录表
+CREATE TABLE alert_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    device_id VARCHAR(64) NOT NULL COMMENT '设备ID',
+    level VARCHAR(16) NOT NULL COMMENT '级别（INFO/WARNING/CRITICAL）',
+    reason VARCHAR(512) NOT NULL COMMENT '告警原因',
+    source VARCHAR(32) NOT NULL DEFAULT 'AI_AGENT' COMMENT '来源（RULE/AI_AGENT）',
+    ai_log_id BIGINT COMMENT '关联的AI分析日志ID',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '状态（0未处理 1已处理 2已忽略）',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    handled_at DATETIME COMMENT '处理时间',
+    handled_by VARCHAR(64) COMMENT '处理人',
+    KEY idx_device_time (device_id, created_at),
+    KEY idx_status (status),
+    KEY idx_level (level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='告警记录表';
+
+
 七、Nacos 配置数据库（nacos_config）
 Nacos 用独立的数据库 nacos_config 存配置，建表 SQL 见 docs/sql/nacos.sql。
 
@@ -563,3 +689,29 @@ JDBC URL 加 rewriteBatchedStatements=true，批量插入速度提升 5-10 倍�
 reportTime 显式设置：不依赖 MyBatis-Plus 自动填充（只填充 MySQL 库值，内存对象可能为 null）。
 
 压测验证：100 台设备持续压测，两边数据 100% 一致。
+
+
+AI Agent 相关维护
+
+- `ai_analysis_log` 会随 AI 分析次数增长，建议按月分区或定期归档
+- `alert_record.status` 定期清理已处理告警（如 90 天前）
+- `ai_analysis_log.tool_calls` 是 JSON 类型，查询时用 `JSON_EXTRACT`
+  ```sql
+  SELECT * FROM ai_analysis_log WHERE JSON_EXTRACT(tool_calls, '$[0].tool') = 'send_alert';
+数据对账（v1.6 AI Agent 验证）
+sql
+-- 规则分布
+SELECT trigger_rule, analysis_result, COUNT(*) 
+FROM ai_analysis_log 
+GROUP BY trigger_rule, analysis_result;
+
+-- 期望结果：
+-- TEMP_GT_85  | WARNING  | 8
+-- TEMP_GT_95  | CRITICAL | 8
+-- STATE_FAULT | CRITICAL | 8
+
+-- 对账
+SELECT 
+  (SELECT COUNT(*) FROM ai_analysis_log) AS ai_total,
+  (SELECT COUNT(*) FROM alert_record) AS alert_total;
+-- ai_total(24) - alert_total(16) = 8（WARNING 级别）

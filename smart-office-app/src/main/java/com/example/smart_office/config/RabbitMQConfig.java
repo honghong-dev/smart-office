@@ -10,6 +10,8 @@ public class RabbitMQConfig {
     // 定义队列的名字，以后发消息和收消息都要用这个名字
     public static final String REGISTER_QUEUE = "register.queue";
 
+
+
     @Bean
     public Queue registerQueue() {
         // 创建一个名叫 register.queue 的队列
@@ -68,5 +70,58 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(approvalDlxQueue())
                 .to(approvalDlxExchange())
                 .with(APPROVAL_DLX_ROUTING_KEY);
+    }
+
+
+
+
+
+
+
+    // ============================================
+// AI 告警队列（新增）
+// ============================================
+    public static final String AI_ALERT_QUEUE = "ai.alert.queue";
+    public static final String AI_ALERT_EXCHANGE = "ai.alert.exchange";
+    public static final String AI_ALERT_ROUTING_KEY = "ai.alert";
+    public static final String AI_ALERT_DLX_QUEUE = "ai.alert.dlx.queue";
+    public static final String AI_ALERT_DLX_EXCHANGE = "ai.alert.dlx.exchange";
+    public static final String AI_ALERT_DLX_ROUTING_KEY = "ai.alert.dlx";
+
+    @Bean
+    public Queue aiAlertQueue() {
+        return QueueBuilder.durable(AI_ALERT_QUEUE)
+                .deadLetterExchange(AI_ALERT_DLX_EXCHANGE)
+                .deadLetterRoutingKey(AI_ALERT_DLX_ROUTING_KEY)
+                .build();
+    }
+
+    @Bean
+    public Queue aiAlertDlxQueue() {
+        return QueueBuilder.durable(AI_ALERT_DLX_QUEUE).build();
+    }
+
+    @Bean
+    public DirectExchange aiAlertExchange() {
+        return new DirectExchange(AI_ALERT_EXCHANGE);
+    }
+
+    @Bean
+    public DirectExchange aiAlertDlxExchange() {
+        return new DirectExchange(AI_ALERT_DLX_EXCHANGE);
+    }
+
+    @Bean
+    public Binding aiAlertBinding() {
+        return BindingBuilder.bind(aiAlertQueue())
+                .to(aiAlertExchange())
+                .with(AI_ALERT_ROUTING_KEY);
+    }
+
+    @Bean
+    public Binding aiAlertDlxBinding() {
+        return BindingBuilder.bind(aiAlertDlxQueue())
+                .to(aiAlertDlxExchange())
+                .with(AI_ALERT_DLX_ROUTING_KEY);
     }
 }

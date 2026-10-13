@@ -11,6 +11,9 @@ public class DeviceTelemetry {
     private Long id;
     private String deviceId;
     private Double temperature;
+    private Double vibration;   // ★ 新增
+    private Integer speed;       // ★ 新增
+    private String state;        // ★ 新增
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime reportTime;
 }
