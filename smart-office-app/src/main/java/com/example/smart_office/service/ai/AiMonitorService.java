@@ -36,15 +36,13 @@ public class AiMonitorService {
 
     @Autowired
     private AiAnalysisLogMapper aiAnalysisLogMapper;
-//
-//    private final ObjectMapper objectMapper = new ObjectMapper();
-    // ✅ 加这行
+
     @Autowired
     private ObjectMapper objectMapper;
 
-
     @Autowired
     private org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
+
     /**
      * 处理一批遥测数据（异步，不阻塞主链路）
      */
@@ -70,7 +68,6 @@ public class AiMonitorService {
                     continue;
                 }
 
-
                 log.warn("[AI Agent] 规则命中: device={}, rule={}, value={}",
                         rule.getDeviceId(), rule.getRuleName(), rule.getTriggerValue());
 
@@ -80,6 +77,7 @@ public class AiMonitorService {
             }
         }
     }
+
     /**
      * 单条异常处理：组装上下文 → 调 LLM → 执行工具 → 写日志
      */

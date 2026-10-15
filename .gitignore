@@ -26,3 +26,7 @@ deploy/data/
 # 系统
 .DS_Store
 Thumbs.db
+
+*.env
+application-local.yml
+application-local.yaml
