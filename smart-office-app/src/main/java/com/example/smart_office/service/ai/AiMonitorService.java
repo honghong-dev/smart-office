@@ -81,6 +81,8 @@ public class AiMonitorService {
     /**
      * 单条异常处理：组装上下文 → 调 LLM → 执行工具 → 写日志
      */
+    @Autowired
+    private com.example.smart_office.service.notification.NotificationService notificationService;
     private void processHit(DeviceTelemetry t, RuleEngine.RuleHit rule) throws Exception {
         String deviceId = rule.getDeviceId();
 
@@ -109,6 +111,12 @@ public class AiMonitorService {
                     rule.getLevel(),
                     "规则 " + rule.getRuleName() + " 命中（值=" + rule.getTriggerValue() + "）",
                     null
+            );
+            // ★ 新增：推送到 WebSocket 大屏广播
+            notificationService.broadcastAlert(
+                    "设备异常告警",
+                    "设备 " + deviceId + " 触发 " + rule.getRuleName() + "，值=" + rule.getTriggerValue() + "，请及时处理",
+                    rule.getLevel()
             );
         }
 

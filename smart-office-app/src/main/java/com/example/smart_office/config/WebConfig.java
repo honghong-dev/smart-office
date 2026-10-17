@@ -18,9 +18,12 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(jwtInterceptor)
                 .addPathPatterns("/api/**") // 拦截所有 /api/ 开头的接口
                 .excludePathPatterns(
-                        "/api/user/login",// 登录接口必须放行，不然谁都没法登录
-                        "/api/user/register",// 放行注册接口（新增！）
-                        "/actuator/**"   // 放行 Actuator 端点
+                        "/api/user/login",      // 登录接口必须放行，不然谁都没法登录
+                        "/api/user/register",   // 放行注册接口
+                        "/actuator/**",         // 放行 Actuator 端点
+                        "/api/test/**",         // 放行测试接口
+                        "/ws/**"                // ★ 必须加这行：放行 WebSocket 握手
                 );
+
     }
 }

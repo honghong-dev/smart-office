@@ -1,23 +1,10 @@
-markdown
 # Smart-Office 部署与运维手册
 
-**文档版本**：v1.6
-**最后更新**：2026-10-13
-**对应代码版本**：Smart-Office v1.6
+文档版本：v1.8
+最后更新：2026-10-17
+对应代码版本：Smart-Office v1.8
 
 本文档记录 Smart-Office 项目从本地运行到 Docker Compose 一键部署的完整操作流程和故障排查指南。
-
-## 变更记录
-
-| 版本 | 日期 | 变更内容 |
-|------|------|----------|
-| v1.0 | 2026-09-27 | 本地启动、Nacos 配置 |
-| v1.1 | 2026-09-29 | Docker 部署、EMQX |
-| v1.2 | 2026-10-04 | Nacos 部署细节、常见问题 |
-| v1.3 | 2026-10-05 | TDengine、Prometheus |
-| v1.4 | 2026-10-05 | 完整 Compose 配置 |
-| v1.5 | 2026-10-09 | 多模块部署；本地起仿真器；TDengine 自动建超表；EMQX 参数调大 |
-| **v1.6** | **2026-10-13** | **AI Agent 配置（DeepSeek API Key 环境变量）；AI Agent 相关故障排查** |
 
 ---
 
@@ -38,7 +25,6 @@ markdown
 | Grafana | latest | 3000 |
 | Docker Desktop | 29.8.0 | - |
 | Git | 2.4x+ | - |
-| Gitee | - | - |
 
 ---
 
@@ -49,27 +35,29 @@ smart-office (父 pom)
 ├── smart-office-app          业务模块（必部署）
 ├── smart-office-simulation   仿真模块（生产不部署）
 └── deploy                    部署编排（Docker Compose + Prometheus + SQL）
-打包：
 
-bash
+打包：
 mvn clean package -DskipTests
+
 生成两个 jar：
 
 smart-office-app/target/smart-office-0.0.1-SNAPSHOT.jar
 
 smart-office-simulation/target/smart-office-simulation-0.0.1-SNAPSHOT.jar
+```
 
 三、本地启动步骤
 3.1 起中间件（Docker Compose）
 bash
 cd deploy
 docker compose up -d mysql redis rabbitmq emqx nacos tdengine prometheus grafana
-只起中间件，不起 smart-office 容器（本地用 IDEA 跑 app）。
+（只起中间件，不起 smart-office 容器，本地用 IDEA 跑 app）。
 
 3.2 起 app（本地 IDEA 或 jar）
+方式 A：IDEA 里 Run SmartOfficeApplication
+方式 B：命令行
+
 bash
-# 方式 A：IDEA 里 Run SmartOfficeApplication
-# 方式 B：命令行
 cd D:\IdeaProjects\smart-office
 java -jar smart-office-app\target\smart-office-0.0.1-SNAPSHOT.jar
 3.3 起仿真器（本地）
@@ -93,7 +81,7 @@ quit                             退出
 
 最后起仿真器
 
-⚠️ 关键约束：不要同时启动容器里的 smart-office-app 和本地 jar/IDEA 的 SpringBoot，会抢 clientId、抢端口、抢资源。
+关键约束：不要同时启动容器里的 smart-office-app 和本地 jar/IDEA 的 SpringBoot，会抢 clientId、抢端口、抢资源。
 
 四、配置文件说明（Nacos + application.yml）
 本地 application.yml（最小配置）
@@ -214,15 +202,21 @@ docker logs smart-office-app --tail 50
 出现 Started SmartOfficeApplication 即为启动成功。
 
 5.5 常用 Docker Compose 命令
-命令	作用
-docker compose up -d	启动所有容器
-docker compose up -d mysql redis rabbitmq emqx nacos tdengine	只启动指定服务
-docker compose stop smart-office	只停 smart-office 服务（保留中间件）
-docker compose down	停掉并删除所有容器
-docker compose down -v	停掉并删除所有容器 + 数据卷
-docker compose ps	查看容器状态
-docker compose logs smart-office	查看 SpringBoot 日志
-⚠️ 服务名 vs 容器名：docker compose stop <服务名> 用服务名（如 smart-office），不是容器名（smart-office-app）。
+docker compose up -d (启动所有容器)
+
+docker compose up -d mysql redis rabbitmq emqx nacos tdengine (只启动指定服务)
+
+docker compose stop smart-office (只停 smart-office 服务，保留中间件)
+
+docker compose down (停掉并删除所有容器)
+
+docker compose down -v (停掉并删除所有容器 + 数据卷)
+
+docker compose ps (查看容器状态)
+
+docker compose logs smart-office (查看 SpringBoot 日志)
+
+注意：服务名 vs 容器名，docker compose stop 服务名 用服务名（如 smart-office），不是容器名（smart-office-app）。
 
 六、Docker Compose 环境变量覆盖
 在 docker-compose.yml 里，smart-office 服务，用 environment 覆盖配置：
@@ -244,9 +238,9 @@ smart-office:
     - SPRING_CLOUD_NACOS_CONFIG_SERVER_ADDR=nacos:8848
 关键：环境变量的优先级，比 application.yml 高。SpringBoot 的"宽松绑定"：
 
-MYSQL_HOST → ${MYSQL_HOST:localhost}
+MYSQL_HOST -> ${MYSQL_HOST:localhost}
 
-TDENGINE_HOST → ${TDENGINE_HOST:localhost}
+TDENGINE_HOST -> ${TDENGINE_HOST:localhost}
 
 注意：Nacos 配置本身也用了环境变量占位，所以环境变量会穿透 Nacos 配置，覆盖其中的占位符。
 
@@ -254,13 +248,13 @@ TDENGINE_HOST → ${TDENGINE_HOST:localhost}
 7.1 Nacos 容器
 Docker Compose 启动的 Nacos，容器名 smart-office-nacos，端口映射：
 
-宿主机 8848 → 容器 8848（HTTP）
+宿主机 8848 -> 容器 8848（HTTP）
 
-宿主机 9848 → 容器 9848（gRPC）
+宿主机 9848 -> 容器 9848（gRPC）
 
-宿主机 9849 → 容器 9849（gRPC）
+宿主机 9849 -> 容器 9849（gRPC）
 
-⚠️ Nacos 启动慢（30~60 秒），日志出现 Nacos started successfully 才算就绪，之后再启动 SpringBoot。
+注意：Nacos 启动慢（30~60 秒），日志出现 Nacos started successfully 才算就绪，之后再启动 SpringBoot。
 
 7.2 Nacos 管理后台
 浏览器访问 http://localhost:8848/nacos
@@ -271,7 +265,6 @@ Docker Compose 启动的 Nacos，容器名 smart-office-nacos，端口映射：
 
 7.3 Nacos 连 MySQL
 Nacos 用 MySQL 存配置，数据库 nacos_config 由 deploy/sql/nacos.sql 初始化。
-
 建表 SQL 必须用官方完整版（精简版会踩坑，见 BUG_LOG.md 问题 49-53）。
 
 7.4 配置 Data ID
@@ -289,15 +282,12 @@ Refresh keys changed: [xxx]
 8.1 TDengine 容器
 Docker Compose 启动的 TDengine，容器名 tdengine，端口映射：
 
-宿主机 6030 → 容器 6030（原生连接）
+宿主机 6030 -> 容器 6030（原生连接）
 
-宿主机 6041 → 容器 6041（REST/taosAdapter）
+宿主机 6041 -> 容器 6041（REST/taosAdapter）
 
 8.2 建库建表
-进容器：
-
-bash
-docker exec -it tdengine taos
+进容器：docker exec -it tdengine taos
 建库建表：
 
 sql
@@ -314,8 +304,7 @@ CREATE STABLE IF NOT EXISTS telemetry (
 ) TAGS (
     device_id   NCHAR(64)
 );
-⚠️ v1.5 关键改进：app 启动时自动建超表。
-
+v1.5 关键改进：app 启动时自动建超表。
 TdengineWriteService.init() 里加了：
 
 java
@@ -355,11 +344,11 @@ docker exec -it tdengine taos -s "USE smart_office; CREATE STABLE IF NOT EXISTS 
 9.1 EMQX 容器
 Docker Compose 启动的 EMQX，容器名 smart-office-emqx，端口映射：
 
-宿主机 1884 → 容器 1883
+宿主机 1884 -> 容器 1883
 
-宿主机 18084 → 容器 18083
+宿主机 18084 -> 容器 18083
 
-宿主机 8084 → 容器 8083
+宿主机 8084 -> 容器 8083
 
 9.2 EMQX 管理后台
 浏览器访问 http://localhost:18084
@@ -372,11 +361,10 @@ Docker Compose 启动的 EMQX，容器名 smart-office-emqx，端口映射：
 
 bash
 docker exec -it smart-office-emqx emqx ctl admins passwd admin admin123456
-⚠️ 注意：EMQX 5.x 的 Dashboard 用户管理命令是 admins（add / passwd / del / mfa），不是 dashboard。
+注意：EMQX 5.x 的 Dashboard 用户管理命令是 admins（add / passwd / del / mfa），不是 dashboard。
 
 9.3 EMQX 关键参数调优
 v1.5 关键改进：max_mqueue_len 调大。
-
 docker-compose.yml 的 emqx 服务：
 
 yaml
@@ -389,17 +377,14 @@ emqx:
     - "1884:1883"
     - "18084:18083"
     - "8084:8083"
-调大原因：app 掉线期间，EMQX 会为它缓存离线消息。默认 max_mqueue_len=1000，超过就丢。 工业级场景必须调大。
-
-估算公式：max_mqueue_len ≥ 最长离线时间 × 消息速率（如 1000 台 × 每秒 1 条 × 离线 5 分钟 = 30 万条）。
-
+调大原因：app 掉线期间，EMQX 会为它缓存离线消息。默认 max_mqueue_len=1000，超过就丢。工业级场景必须调大。
+估算公式：max_mqueue_len >= 最长离线时间 * 消息速率（如 1000 台 * 每秒 1 条 * 离线 5 分钟 = 30 万条）。
 验证配置生效：
 
 bash
 docker exec smart-office-emqx env | Select-String "MAX_MQUEUE"
 9.4 用 MQTTX 模拟设备发送数据（可选）
 现在优先用仿真器（smart-office-simulation），不再需要手动 MQTTX。
-
 如果要手动测：
 
 协议：mqtt://
@@ -412,16 +397,6 @@ Port：1884
 
 Topic：factory/device/001/telemetry
 
-Payload：
-
-json
-{
-  "deviceId": "001",
-  "temperature": 75.5,
-  "vibration": 2.0,
-  "speed": 1000,
-  "timestamp": 1735689600000
-}
 9.5 验证 MQTT 链路
 bash
 docker logs smart-office-app --tail 20
@@ -436,11 +411,11 @@ bash
 docker exec smart-office-emqx emqx ctl clients show smart-office-backend
 关键字段：
 
-clean_start=false → 持久会话
+clean_start=false (持久会话)
 
-session_expiry_interval=7200 → 会话保留 2 小时
+session_expiry_interval=7200 (会话保留 2 小时)
 
-enqueued_msgs=N → 离线队列积压 N 条
+enqueued_msgs=N (离线队列积压 N 条)
 
 十、监控体系部署
 10.1 Prometheus
@@ -450,9 +425,9 @@ Query：查指标
 
 Alerts：看告警规则
 
-Status → Targets：看抓取目标
+Status -> Targets：看抓取目标
 
-⚠️ 本地 IDEA 跑 SpringBoot 时，Prometheus 抓取目标要改。容器内 prometheus.yml 里写的是 smart-office:8080（服务名），本地跑时该服务名解析不了。改用 host.docker.internal:8080。
+注意：本地 IDEA 跑 SpringBoot 时，Prometheus 抓取目标要改。容器内 prometheus.yml 里写的是 smart-office:8080（服务名），本地跑时该服务名解析不了。改用 host.docker.internal:8080。
 
 10.2 Grafana
 浏览器访问 http://localhost:3000
@@ -464,7 +439,7 @@ Status → Targets：看抓取目标
 数据源 URL：http://smart-office-prometheus:9090
 
 10.3 告警规则
-告警规则文件 prometheus-alert.yml，包含 3 条：
+告警文件 prometheus-alert.yml，包含 3 条：
 
 HTTP 5xx 错误率 > 1%，持续 1 分钟
 
@@ -488,7 +463,7 @@ JDK 17 Cgroup 报错	openjdk:17-jdk-slim 不兼容	换 eclipse-temurin，或加 
 MySQL ASCII \0	客户端编码 latin1	mysqldump 加 --default-character-set=utf8mb4
 MySQL 初始化不执行 SQL	数据卷已存在	docker compose down -v 删数据卷
 YAML 中文乱码	文件编码 GBK	改成 UTF-8
-RabbitMQ NOT_ALLOWED	新用户无 vhost 权限	管理后台 Admin → Users → Set permission
+RabbitMQ NOT_ALLOWED	新用户无 vhost 权限	管理后台 Admin -> Users -> Set permission
 Redis Connection refused	bind 只监听 127.0.0.1	修改 bind 0.0.0.0，protected-mode no
 MQTTX 报 socket hang up	协议前缀选错	用 mqtt://，不要用 ws://
 EMQX "无订阅者"丢弃	订阅端掉线瞬间	调大 max_mqueue_len 和 max_inflight
@@ -499,19 +474,18 @@ TDengine 双写少数据	reportTime 为 null，静默丢	显式 setReportTime
 TDengine 多子表 INSERT 报错	语法错误，每个子表都带 INSERT INTO	只有第一个带，后续直接写子表名
 TDengine 超表不存在	清库后超表被删，未重建	init() 里加 CREATE STABLE IF NOT EXISTS
 Nacos 未就绪启动失败	Nacos 启动 30~60 秒，SpringBoot 抢跑	等 Nacos 日志就绪再启 SpringBoot
-容器全停应用连不上	docker compose down 停了全部	docker compose stop <服务名> 只停单个
+容器全停应用连不上	docker compose down 停了全部	docker compose stop 服务名 只停单个
 EMQX Dashboard 密码改了没生效	命令版本差异	用 emqx ctl admins passwd
 MQTT app 掉线后收不到补发	cleanSession=true	改 setCleanSession(false)
 MQTT 补发推一半卡住	回调里 log.info 阻塞	回调里只入队，日志移到消费端
 多模块重构后 simulation 打包失败	空模块无主类	加启动类，或从父 pom modules 移除
 多模块重构后 Jackson 缺失	spring-boot-starter 不带 Jackson	加 jackson-databind 依赖
 Maven 打包中文乱码	缺 project.build.sourceEncoding	父 pom 加 UTF-8 属性
-| AI Agent 不触发 | 规则未命中 / provider 配置错 | 检查 `RuleEngine` 阈值 + `ai.llm.provider` 配置 |
-| AI Agent 告警风暴 | Redis 去重未生效 | 检查 Redis 连接 + `ai:agent:dedup:*` key 是否存在 |
-| LLM 调用报 401 | DeepSeek API Key 未配置 / 过期 | 检查环境变量 `DEEPSEEK_API_KEY` |
-| ai_analysis_log 写不进去 | MySQL JSON 字段格式错 | 检查 `tool_calls` 是否为合法 JSON（见 BUG_LOG 问题 81）|
-| 告警发 MQ 失败 | SimpleMessageConverter 不支持 POJO | 用 Jackson 序列化成 JSON 字符串（见 BUG_LOG 问题 82）|
-
+AI Agent 不触发	规则未命中 / provider 配置错	检查 RuleEngine 阈值 + ai.llm.provider 配置
+AI Agent 告警风暴	Redis 去重未生效	检查 Redis 连接 + ai:agent:dedup:* key 是否存在
+LLM 调用报 401	DeepSeek API Key 未配置 / 过期	检查环境变量 DEEPSEEK_API_KEY
+ai_analysis_log 写不进去	MySQL JSON 字段格式错	检查 tool_calls 是否为合法 JSON（见 BUG_LOG 问题 81）
+告警发 MQ 失败	SimpleMessageConverter 不支持 POJO	用 Jackson 序列化成 JSON 字符串（见 BUG_LOG 问题 82）
 十二、安全配置清单
 数据库
 MySQL 8.0：使用 mysql_native_password 兼容旧驱动。
@@ -523,7 +497,7 @@ MySQL 8.0：使用 mysql_native_password 兼容旧驱动。
 Redis
 bind 0.0.0.0，protected-mode no（仅限开发环境）。
 
-设置复杂密码（开发环境可用 123456，生产环境必须 ≥16 位）。
+设置复杂密码（开发环境可用 123456，生产环境必须 >=16 位）。
 
 端口 6379 不开放公网。
 
@@ -535,7 +509,7 @@ RabbitMQ
 EMQX（MQTT）
 修改默认密码，不使用 admin / public。
 
-生产环境使用强密码（≥16 位）。
+生产环境使用强密码（>=16 位）。
 
 端口 1883 / 18083 不开放公网。
 
@@ -574,8 +548,9 @@ Grafana 改默认密码。
 
 数据库、Redis、RabbitMQ、EMQX、Nacos、TDengine、Prometheus、Grafana 只在内网访问，不开放公网。
 
-十四、Git 版本管理
-Gitee 仓库： git@gitee.com:xiao-hongh/smart-office.git
+十四、Git 版本管理与 AI 配置
+14.1 Gitee 仓库
+git@gitee.com:xiao-hongh/smart-office.git
 
 首次推送：
 
@@ -592,120 +567,34 @@ bash
 git add .
 git commit -m "说明"
 git push
-.gitignore 排除：
+.gitignore 排除：target/、*.jar、.idea/、*.iml、*.log、logs/、data/、deploy/data/
 
-target/、*.jar
+14.2 AI Agent 环境变量配置（v1.7）
+IDEA 本地运行：
+Run -> Edit Configurations -> SmartOfficeApplication -> Environment variables 填：
 
-.idea/、*.iml
-
-*.log、logs/
-
-data/、deploy/data/
-
-
-## 十四点五、AI Agent 配置（v1.6 新增）
-
-### 14.5.1 配置项
-
-**在 Nacos 的 `smart-office-docker.yml` 里加：**
-
-```yaml
-ai:
-  llm:
-    provider: mock              # mock / deepseek
-    deepseek:
-      api-key: ${DEEPSEEK_API_KEY:}
-      base-url: https://api.deepseek.com
-      model: deepseek-chat
-环境变量注入（Docker Compose）：
+text
+AI_LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-你的真实Key
+Docker 容器运行（docker-compose.yml）：
 
 yaml
 smart-office:
   environment:
+    - AI_LLM_PROVIDER=deepseek
     - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-    - AI_LLM_PROVIDER=mock      # 开发用 mock，生产用 deepseek
-本地 IDEA 跑（.env 文件或 IDEA 运行配置）：
-
-环境变量：DEEPSEEK_API_KEY=sk-xxxxxx
-
-或直接用 mock（无需 API Key）
-
-14.5.2 切换 LLM 实现
-场景	provider	说明
-开发调试	mock	不花钱、不依赖网络、秒回
-生产/演示	deepseek	调真实 API，需要 API Key
-切换方式：改 Nacos 配置或环境变量，重启 app。
-
-14.5.3 AI Agent 启用/禁用
-禁用 AI 层（临时降级）：
-
-方式 A（推荐）：注释掉 TelemetryBatchWriter.flush() 里的 AI 调用
-
-java
-// try {
-//     aiMonitorService.onBatchFlushed(batch);
-// } catch (Exception e) {
-//     log.error("AI Agent 调用失败，不影响主链路", e);
-// }
-方式 B：把 AiMonitorService 加 @ConditionalOnProperty，通过配置开关控制
-
-14.5.4 AI Agent 相关表初始化
-部署时，deploy/sql/smart_office.sql 里的建表 SQL 需包含 v1.6 新增的两张表：
-
-sql
--- AI 分析日志表
-CREATE TABLE IF NOT EXISTS ai_analysis_log (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    device_id VARCHAR(64) NOT NULL,
-    trigger_rule VARCHAR(128) NOT NULL,
-    trigger_value VARCHAR(64),
-    context_json JSON,
-    llm_response TEXT,
-    tool_calls JSON,
-    analysis_result VARCHAR(32),
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_device_time (device_id, created_at),
-    KEY idx_created_at (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 告警记录表
-CREATE TABLE IF NOT EXISTS alert_record (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    device_id VARCHAR(64) NOT NULL,
-    level VARCHAR(16) NOT NULL,
-    reason VARCHAR(512) NOT NULL,
-    source VARCHAR(32) NOT NULL DEFAULT 'AI_AGENT',
-    ai_log_id BIGINT,
-    status TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    handled_at DATETIME,
-    handled_by VARCHAR(64),
-    KEY idx_device_time (device_id, created_at),
-    KEY idx_status (status),
-    KEY idx_level (level)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-⚠️ 注意：MySQL 容器已启动过的话，docker-entrypoint-initdb.d 里的 SQL 不会重跑。需手动执行：
+启动前在宿主机设环境变量：
 
 bash
-docker exec -i smart-office-mysql mysql -uroot -p123456 smart_office < deploy/sql/v1.6_ai_tables.sql
-14.5.5 AI Agent MQ 拓扑
-首次启动 app 时，Spring Boot 会自动声明：
+export DEEPSEEK_API_KEY=sk-你的真实Key    # Linux/Mac
+$env:DEEPSEEK_API_KEY="sk-你的真实Key"    # Windows PowerShell
+安全要求：
 
-Exchange：ai.alert.exchange（DirectExchange）
+Key 不进 Git（.gitignore 排除 .env）
 
-Queue：ai.alert.queue（durable，含死信配置）
+application.yml 用 ${DEEPSEEK_API_KEY:} 占位
 
-DLX Exchange：ai.alert.dlx.exchange
-
-DLX Queue：ai.alert.dlx.queue
-
-验证：RabbitMQ 管理台（http://localhost:15673）→ Queues → 看到 ai.alert.queue 和 ai.alert.dlx.queue。
-
-清理堆积（如需）：
-
-bash
-docker exec -it smart-office-rabbitmq rabbitmqctl purge_queue ai.alert.queue
-
+生产环境用 Secrets Manager / K8s Secret
 
 十五、数据零丢失验证（v1.5）
 场景：100 台设备，每秒 100 条遥测，app 掉线 30 秒后重连。
@@ -713,9 +602,9 @@ docker exec -it smart-office-rabbitmq rabbitmqctl purge_queue ai.alert.queue
 完整链路：
 
 text
-sim 发 3200 条 → EMQX → app 掉线 → EMQX 缓存到 offline 队列
+sim 发 3200 条 -> EMQX -> app 掉线 -> EMQX 缓存到 offline 队列
     ↓
-app 重连 → EMQX 自动补发 → app 消费 → MySQL + TDengine 双写
+app 重连 -> EMQX 自动补发 -> app 消费 -> MySQL + TDengine 双写
 验证结果：
 
 检查点	结果
@@ -740,3 +629,29 @@ EMQX max_mqueue_len：100000
 Paho maxInflight：1000
 
 详见 ARCHITECTURE.md 第二十五节。
+
+十六、冷热分离与 WebSocket 验证（v1.8 新增）
+16.1 冷热分离查询验证
+启动 app 后，用 Apifox 测试查询接口。
+
+URL：http://localhost:8080/api/device/telemetry?deviceId=WELD-02-01&startTime=2026-10-15 00:00:00&endTime=2026-10-17 23:59:59&limit=100
+
+预期结果：接口返回 200，并返回对应数量的遥测数据。
+
+观察 app 控制台日志：
+
+text
+[Query] 全部热数据，走 TDengine: device=WELD-02-01
+[TDengine] 查询完成: device=WELD-02-01, 返回 X 条
+16.2 WebSocket 站内信验证
+启动 app，确保已注入 spring-boot-starter-websocket。
+
+WebSocket 端点地址：ws://localhost:8080/ws
+
+前端或测试工具连接后，订阅 /topic/alerts 广播频道。
+
+在仿真层控制台输入：
+
+text
+inject WELD-02-01 OVERHEAT
+预期：AI Agent 触发规则后，app 控制台打印 [WebSocket] 广播告警，前端瞬间收到消息。

@@ -20,6 +20,9 @@ public class ApprovalTimeoutConsumer {
     @Autowired
     private MqttIdempotentService idempotentService;
 
+    @Autowired
+    private com.example.smart_office.service.notification.NotificationService notificationService;
+
     @RabbitListener(queues = "approval.dlx.queue")
     public void handleTimeout(Long approvalId) {
         log.info("收到审批超时消息: approvalId={}", approvalId);
@@ -46,6 +49,13 @@ public class ApprovalTimeoutConsumer {
         // 未处理，发提醒
         log.warn("⚠️ 审批超时提醒: approvalId={}, title={}, approverId={}",
                 approvalId, approval.getTitle(), approval.getApproverId());
+
+        // ★ 新增：点对点推送给审批人
+        notificationService.sendToUser(
+                approval.getApproverId().toString(),
+                "审批超时提醒",
+                "您有一项审批（" + approval.getTitle() + "）已超时，请尽快处理。"
+        );
 
         // TODO: 后续接入钉钉/邮件/站内信
     }

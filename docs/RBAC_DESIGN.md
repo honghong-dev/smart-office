@@ -25,7 +25,6 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 ## 三、数据模型
 
 ### 表 1：sys_user（用户表）
-
 | 字段 | 说明 |
 |------|------|
 | id | 用户 ID |
@@ -34,7 +33,6 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 | dept_id | 部门 ID（用于数据权限） |
 
 ### 表 2：sys_role（角色表）
-
 | 字段 | 说明 |
 |------|------|
 | id | 角色 ID |
@@ -42,14 +40,12 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 | role_code | 角色编码 |
 
 ### 表 3：sys_user_role（用户角色关联表）
-
 | 字段 | 说明 |
 |------|------|
 | user_id | 用户 ID |
 | role_id | 角色 ID |
 
 ### 表 4：sys_permission（权限表）
-
 | 字段 | 说明 |
 |------|------|
 | id | 权限 ID |
@@ -58,14 +54,12 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 | type | 类型（MENU / BUTTON / API） |
 
 ### 表 5：sys_role_permission（角色权限关联表）
-
 | 字段 | 说明 |
 |------|------|
 | role_id | 角色 ID |
 | permission_id | 权限 ID |
 
 ### 表 6：sys_dept（部门表）
-
 | 字段 | 说明 |
 |------|------|
 | id | 部门 ID |
@@ -85,29 +79,26 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 | USER（员工） | 基础权限（approval:submit、user:profile） | 不能改任何人 |
 
 ### 三级管理规则
-
 | 当前用户 | 能改自己 | 能改厂长 | 能改班长 | 能改员工 | 能造老板 |
 |----------|----------|----------|----------|----------|----------|
-| 老板 | ❌ | ✅ | ✅ | ✅ | ❌ |
-| 厂长 | ✅ | ✅ | ✅ | ✅ | ❌ |
-| 班长 | ❌ | ❌ | ❌ | ✅ | ❌ |
-| 员工 | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 老板 | 否 | 是 | 是 | 是 | 否 |
+| 厂长 | 是 | 是 | 是 | 是 | 否 |
+| 班长 | 否 | 否 | 否 | 是 | 否 |
+| 员工 | 否 | 否 | 否 | 否 | 否 |
 
 核心：不能越级，不能造老板。
 
 ### 注册自动分配 USER 角色
-
 新用户注册时，自动分配 USER 角色，保证新用户有基础权限（approval:submit、user:profile），避免"注册后什么都不能干"。
 
 ### 部门手动分配（数据权限）
-
-注册时，只分配 USER 身份。部门（dept_id）、岗位（角色），需要管理员手动分配。这是真实企业流程，就像入职长城汽车，前两天是"新员工"，两天后才分到"冲焊车间"，定岗定级。
+注册时，只分配 USER 身份。部门（`dept_id`）、岗位（角色），需要管理员手动分配。这是真实企业流程，就像入职长城汽车，前两天是"新员工"，两天后才分到"冲焊车间"，定岗定级。
 
 ---
 
 ## 五、权限编码规范
 
-命名格式：模块:动作
+命名格式：`模块:动作`
 
 | 模块 | 动作 | 编码示例 |
 |------|------|----------|
@@ -117,10 +108,9 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 | mqtt | message / deadLetter | mqtt:message |
 
 规范要点：
-
-- 全小写，冒号分隔。
-- 模块名用单数。
-- 动作名用动词。
+1. 全小写，冒号分隔。
+2. 模块名用单数。
+3. 动作名用动词。
 
 ---
 
@@ -129,11 +119,11 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 1. 用户登录成功后，根据 userId 查询权限编码列表。
 2. 将权限列表写入 Redis（Key: `user:permissions:{userId}`，30 分钟过期）。
 3. 每次请求进入 `JwtInterceptor`：
-   - 校验 JWT 是否有效。
-   - 检查方法上是否有 `@RequiresPermission` 注解。
-   - 从 Redis 读取用户权限，比对是否包含所需权限。
-   - 缓存未命中时，查数据库，重建缓存（用户无感，不用重新登录）。
-   - 无权限返回 403。
+    - 校验 JWT 是否有效。
+    - 检查方法上是否有 `@RequiresPermission` 注解。
+    - 从 Redis 读取用户权限，比对是否包含所需权限。
+    - 缓存未命中时，查数据库，重建缓存（用户无感，不用重新登录）。
+    - 无权限返回 403。
 4. 接口级别鉴权通过自定义注解 + 反射实现。
 
 **关键设计**：JWT 里只放 userId，不放权限。权限每次从 Redis 实时查。
@@ -148,6 +138,7 @@ RBAC（Role-Based Access Control，基于角色的访问控制）的核心思想
 @RequiresPermission("user:delete")
 @DeleteMapping("/{id}")
 public Result<String> deleteUser(@PathVariable Long id) { ... }
+```
 拦截器通过反射读取 @RequiresPermission 注解，拿到所需的权限编码，与当前用户的权限集合比对。
 
 八、核心代码结构
@@ -173,53 +164,31 @@ JOIN sys_user_role ur ON r.id = ur.role_id
 WHERE ur.user_id = #{userId} AND r.deleted = 0;
 十、实测验证
 场景一：有权限
-用户拥有 user:list 权限。
-
-请求 GET /api/user/page，带 Token。
-
-返回 200，正常显示用户分页数据。
+用户拥有 user:list 权限。请求 GET /api/user/page，带 Token。返回 200，正常显示用户分页数据。
 
 场景二：无权限
-删除 user:list 权限的关联数据。
-
-清空 Redis，重新登录。
-
-请求 GET /api/user/page，带 Token。
-
-返回 403 Forbidden: missing permission user:list。
+删除 user:list 权限的关联数据。清空 Redis，重新登录。请求 GET /api/user/page，带 Token。返回 403 Forbidden: missing permission user:list。
 
 场景三：三级管理
 操作	预期
-老板改自己	❌ 超级管理员不能修改自己的角色
-老板改厂长	✅
-老板造老板	❌ 不能将用户提升为超级管理员
-厂长改自己	✅
-厂长改班长	✅
-班长改自己	❌ 低级管理员不能修改自己的角色
-班长改厂长	❌ 低级管理员不能修改管理员的角色
-班长改员工	✅
-班长把员工改成班长	✅
-员工改任何人	❌ 没有 user:assignRole 权限
+老板改自己	失败：超级管理员不能修改自己的角色
+老板改厂长	成功
+老板造老板	失败：不能将用户提升为超级管理员
+厂长改自己	成功
+厂长改班长	成功
+班长改自己	失败：低级管理员不能修改自己的角色
+班长改厂长	失败：低级管理员不能修改管理员的角色
+班长改员工	成功
+班长把员工改成班长	成功
+员工改任何人	失败：没有 user:assignRole 权限
 场景四：权限缓存刷新
-用户 xh 有 user:list 权限，请求 /api/user/page 返回 200。
-
-管理员调 assignRole，把 xh 的角色改成"无 user:list 的角色"。
-
-xh 不重新登录，用旧 Token，请求 /api/user/page，返回 403。
-
-期间，xh 不用重新登录。
+用户 xh 有 user:list 权限，请求 /api/user/page 返回 200。管理员调 assignRole，把 xh 的角色改成"无 user:list 的角色"。xh 不重新登录，用旧 Token，请求 /api/user/page，返回 403。期间，xh 不用重新登录。
 
 场景五：缓存未命中，查库重建
-管理员调 assignRole，删了 user:permissions:123。
-
-xh 请求 /api/user/page，JwtInterceptor 缓存未命中，查数据库，重建缓存。
-
-返回 200 或 403，取决于新权限。
+管理员调 assignRole，删了 user:permissions:123。xh 请求 /api/user/page，JwtInterceptor 缓存未命中，查数据库，重建缓存。返回 200 或 403，取决于新权限。
 
 场景六：数据权限
-admin1（dept_id = 1，非管理员）调 /api/user/page，只看到 dept_id = 1 的用户。
-
-Boss（SUPER_ADMIN）调 /api/user/page，看到所有用户。
+admin1（dept_id = 1，非管理员）调 /api/user/page，只看到 dept_id = 1 的用户。Boss（SUPER_ADMIN）调 /api/user/page，看到所有用户。
 
 十一、权限缓存刷新机制（已完成）
 问题
@@ -227,9 +196,7 @@ Boss（SUPER_ADMIN）调 /api/user/page，看到所有用户。
 
 方案：Redis Pub/Sub 主动刷新
 管理员改权限的接口，调用 redisTemplate.convertAndSend("permission:refresh", userId)。
-
 各 Java 实例订阅 permission:refresh 频道，收到消息后执行 redisTemplate.delete("user:permissions:" + userId)。
-
 下次请求，权限缓存未命中，重新从数据库查，写入 Redis。
 
 代码示例
@@ -250,16 +217,11 @@ public RedisMessageListenerContainer container(RedisConnectionFactory factory) {
     return container;
 }
 优点：权限变更秒级生效，不用重新登录。
-
 缺点：需要处理多实例订阅、消息丢失等情况。
 
 十二、数据权限（已完成）
 方案
-加部门表 sys_dept。
-
-用户表加 dept_id。
-
-查询时，如果是非管理员，加 WHERE dept_id = 当前用户的部门。
+加部门表 sys_dept。用户表加 dept_id。查询时，如果是非管理员，加 WHERE dept_id = 当前用户的部门。
 
 代码
 java
@@ -290,12 +252,10 @@ Redis：作为二级缓存，30 分钟过期。
 请求进来，先查 Caffeine，未命中再查 Redis，都未命中再查数据库。
 
 优点：减少 Redis 访问，提升性能。
-
 缺点：本地缓存有延迟，权限变更时要同时清 Caffeine 和 Redis。
 
 十四、SUB_ADMIN 权限说明
 SUB_ADMIN（班长）拥有 user:assignRole 权限，能调用 assignRole 接口。
-
 但业务逻辑做双向校验：
 
 校验目标用户当前角色：不能是 SUPER_ADMIN、ADMIN、SUB_ADMIN。
@@ -306,7 +266,7 @@ SUB_ADMIN（班长）拥有 user:assignRole 权限，能调用 assignRole 接口
 
 所以 SUB_ADMIN 能进接口，但会被业务逻辑拦住越级操作。
 
-原文档「除 user:assignRole 外的所有权限」的表述，与场景三「班长改员工 ✅」矛盾。以本节说明为准。
+注意：原文档「除 user:assignRole 外的所有权限」的表述，与场景三「班长改员工成功」矛盾。以本节说明为准。
 
 十五、常见坑
 问题	原因	解决方案
@@ -318,18 +278,17 @@ Redis 里没有权限缓存	登录逻辑没写入	检查 SysUserServiceImpl.logi
 改了权限缓存还在	没清 Redis 缓存	用 Redis Pub/Sub 主动清缓存，JwtInterceptor 缓存未命中时查库重建
 管理员把自己锁了	管理员能改自己的角色	老板不能改自己，班长不能改自己，只有厂长能改自己
 数据权限，缓存串数据	cacheKey 不带 userId	cacheKey 加 currentUser.getId()
-
 十六、下一步优化方向
-☑ 权限动态刷新：Redis Pub/Sub 主动清缓存（已完成）。
+权限动态刷新：Redis Pub/Sub 主动清缓存（已完成，详见第十一节）。
 
-☑ 三级管理：老板、厂长、班长、员工，越级拦截（已完成）。
+三级管理：老板、厂长、班长、员工，越级拦截（已完成，详见第四节）。
 
-☑ 注册自动分配 USER：新用户有基础权限（已完成）。
+注册自动分配 USER：新用户有基础权限（已完成，详见第四节）。
 
-☑ 审计日志：记录权限变更（已完成）。
+审计日志：记录权限变更（已完成）。
 
-☑ 数据权限：部门隔离（已完成）。
+数据权限：部门隔离（已完成，详见第十二节）。
 
-□ 本地 Caffeine 缓存：减少 Redis 访问。
+本地 Caffeine 缓存：减少 Redis 访问（规划中，详见第十三节）。
 
-□ 菜单权限 + 前端联动：登录后返回用户可见的菜单列表。
+菜单权限 + 前端联动：登录后返回用户可见的菜单列表。

@@ -59,3 +59,7 @@ ai:
       api-key: ${DEEPSEEK_API_KEY:}           # 从环境变量读，不硬编码
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       model: ${DEEPSEEK_MODEL:deepseek-chat}
+
+device:
+  telemetry:
+    hot-data-days: 7    # 热数据天数（近 7 天查 TDengine）

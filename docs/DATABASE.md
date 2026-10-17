@@ -1,9 +1,8 @@
-markdown
 # Smart-Office 数据库设计文档
 
-**文档版本**：v1.6
-**最后更新**：2026-10-13
-**对应代码版本**：Smart-Office v1.6
+文档版本：v1.8
+最后更新：2026-10-17
+对应代码版本：Smart-Office v1.8
 
 ## 一、基本信息
 
@@ -12,7 +11,7 @@ markdown
 - 排序规则：`utf8mb4_0900_ai_ci`
 - 存储引擎：`InnoDB`
 
-**说明**：另有一个 `nacos_config` 库，用于 Nacos 配置中心，见本文第 7 节。设备遥测数据同时双写 MySQL 和 TDengine，见第 8 节。
+**说明**：另有一个 `nacos_config` 库，用于 Nacos 配置中心。设备遥测数据同时双写 MySQL 和 TDengine。
 
 ## 变更记录
 
@@ -24,14 +23,15 @@ markdown
 | v1.3 | 2026-10-05 | Nacos 库说明 |
 | v1.4 | 2026-10-05 | TDengine 时序库设计 |
 | v1.5 | 2026-10-09 | device_telemetry 加 vibration/speed/state；TDengine 超表修正；索引验证 |
-| **v1.6** | **2026-10-13** | **新增 ai_analysis_log（AI 分析日志）、alert_record（告警记录）两张表** |
+| v1.6 | 2026-10-13 | 新增 ai_analysis_log（AI 分析日志）、alert_record（告警记录）两张表 |
+| v1.7 | 2026-10-15 | 无表结构变更（AI Agent 接 DeepSeek 真 LLM，数据表不变） |
+| v1.8 | 2026-10-17 | 无表结构变更（冷热分离查询与 WebSocket 推送） |
 
 ---
 
 ## 二、表结构设计
 
 ### 表 1：sys_user（用户表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -46,7 +46,6 @@ markdown
 | deleted | TINYINT | 是 | 0 | 逻辑删除 |
 
 ### 表 2：sys_role（角色表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -58,7 +57,6 @@ markdown
 | deleted | TINYINT | 是 | 0 | 逻辑删除 |
 
 **四种角色**：
-
 | role_code | role_name | description |
 |-----------|-----------|-------------|
 | SUPER_ADMIN | 超级管理员 | 拥有所有权限，唯一，不能新增，不能被修改 |
@@ -67,7 +65,6 @@ markdown
 | USER | 普通用户 | 基础权限，不能管理 |
 
 ### 表 3：sys_user_role（用户角色关联表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -78,7 +75,6 @@ markdown
 **约束**：`uk_user_role` 唯一索引（user_id + role_id）。
 
 ### 表 4：sys_permission（权限表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -90,7 +86,6 @@ markdown
 | deleted | TINYINT | 是 | 0 | 逻辑删除 |
 
 **现有权限**：
-
 | permission_code | permission_name |
 |-----------------|-----------------|
 | user:list | 查询用户列表 |
@@ -102,7 +97,6 @@ markdown
 | approval:handle | 处理审批 |
 
 ### 表 5：sys_role_permission（角色权限关联表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -113,7 +107,6 @@ markdown
 **约束**：`uk_role_permission` 唯一索引（role_id + permission_id）。
 
 **角色-权限矩阵**：
-
 | 角色 | 权限 |
 |------|------|
 | SUPER_ADMIN | user:list、user:delete、user:assignRole、user:assignDept、user:profile、approval:submit、approval:handle |
@@ -122,7 +115,6 @@ markdown
 | USER | user:profile、approval:submit |
 
 ### 表 6：sys_dept（部门表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -133,7 +125,6 @@ markdown
 | deleted | TINYINT | 是 | 0 | 逻辑删除 |
 
 **示例数据**：
-
 | id | dept_name | dept_code |
 |----|-----------|-----------|
 | 1 | 研发部 | DEV |
@@ -141,7 +132,6 @@ markdown
 | 3 | 冲焊车间 | WELD |
 
 ### 表 7：sys_approval（审批单主表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -156,7 +146,6 @@ markdown
 | deleted | TINYINT | 是 | 0 | 逻辑删除 |
 
 ### 表 8：sys_approval_record（审批记录表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -167,7 +156,6 @@ markdown
 | create_time | DATETIME | 是 | 当前时间 | 操作时间 |
 
 ### 表 9：sys_audit_log（审计日志表）
-
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
@@ -185,17 +173,16 @@ markdown
 - `idx_operator`（operator_id）
 - `idx_create_time`（create_time）
 
-### 表 10：device_telemetry（设备遥测数据表）★ v1.5 加字段
-
+### 表 10：device_telemetry（设备遥测数据表）
 | 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
 |--------|------|----------|--------|------|
 | id | BIGINT | 否 | 自增 | 主键 ID |
 | device_id | VARCHAR(50) | 否 | 无 | 设备 ID（如 PRESS-01-01） |
-| **device_name** | **VARCHAR(64)** | 是 | 无 | **设备名称（v1.5 新增）** |
-| **state** | **VARCHAR(20)** | 是 | 无 | **设备状态：RUNNING/IDLE/FAULT/MAINTENANCE（v1.5 新增）** |
+| device_name | VARCHAR(64) | 是 | 无 | 设备名称（v1.5 新增） |
+| state | VARCHAR(20) | 是 | 无 | 设备状态：RUNNING/IDLE/FAULT/MAINTENANCE（v1.5 新增） |
 | temperature | DECIMAL(5,2) | 否 | 无 | 温度（℃） |
-| **vibration** | **DECIMAL(5,2)** | 是 | 无 | **振动（mm/s）（v1.5 新增）** |
-| **speed** | **INT** | 是 | 无 | **转速（rpm）（v1.5 新增）** |
+| vibration | DECIMAL(5,2) | 是 | 无 | 振动（mm/s）（v1.5 新增） |
+| speed | INT | 是 | 无 | 转速（rpm）（v1.5 新增） |
 | report_time | DATETIME | 是 | 无 | 上报时间（由 MyBatis-Plus 自动填充） |
 
 **索引**：
@@ -231,64 +218,70 @@ idx_created_at（created_at）
 
 DeadLetterService.record() 内部 catch 所有异常，不抛（避免死信记录反而影响主流程）
 
+表 12：ai_analysis_log（AI 分析日志表）★ v1.6 新增
+字段名	类型	是否为空	默认值	说明
+id	BIGINT	否	自增	主键 ID
+device_id	VARCHAR(64)	否	无	设备 ID
+trigger_rule	VARCHAR(128)	否	无	触发规则名（如 TEMP_GT_95）
+trigger_value	VARCHAR(64)	是	无	触发值（如 96.3）
+context_json	JSON	是	无	喂给 LLM 的完整上下文
+llm_response	TEXT	是	无	LLM 最终输出
+tool_calls	JSON	是	无	LLM 调用的工具列表（合法 JSON）
+analysis_result	VARCHAR(32)	是	无	研判结论（WARNING / CRITICAL）
+created_at	DATETIME	否	当前时间	创建时间
+索引：
 
-### 表 12：ai_analysis_log（AI 分析日志表）★ v1.6 新增
+idx_device_time（device_id + created_at）：按设备 + 时间查询
 
-| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
-|--------|------|----------|--------|------|
-| id | BIGINT | 否 | 自增 | 主键 ID |
-| device_id | VARCHAR(64) | 否 | 无 | 设备 ID |
-| trigger_rule | VARCHAR(128) | 否 | 无 | 触发规则名（如 TEMP_GT_95） |
-| trigger_value | VARCHAR(64) | 是 | 无 | 触发值（如 96.3） |
-| context_json | JSON | 是 | 无 | 喂给 LLM 的完整上下文 |
-| llm_response | TEXT | 是 | 无 | LLM 最终输出 |
-| tool_calls | JSON | 是 | 无 | LLM 调用的工具列表（合法 JSON） |
-| analysis_result | VARCHAR(32) | 是 | 无 | 研判结论（WARNING / CRITICAL） |
-| created_at | DATETIME | 否 | 当前时间 | 创建时间 |
+idx_created_at（created_at）：按时间查询
 
-**索引**：
-- `idx_device_time`（device_id + created_at）：按设备 + 时间查询
-- `idx_created_at`（created_at）：按时间查询
+说明：
 
-**说明**：
-- `context_json`：完整保存喂给 LLM 的上下文，可复现分析过程
-- `tool_calls`：JSON 类型，必须合法 JSON（用 Jackson 序列化，不手拼，见 BUG_LOG 问题 81）
-- `analysis_result` 与 `trigger_rule` 配合，可统计各级别触发次数
+context_json：完整保存喂给 LLM 的上下文，可复现分析过程
 
-**对账逻辑**：
+tool_calls：JSON 类型，必须合法 JSON（用 Jackson 序列化，不手拼，见 BUG_LOG 问题 81）
+
+analysis_result 与 trigger_rule 配合，可统计各级别触发次数
+
+对账逻辑：
+
 ai_analysis_log 总数 = WARNING 数 + CRITICAL 数
+
 alert_record 总数 = CRITICAL 数
 
-text
+表 13：alert_record（告警记录表）★ v1.6 新增
+字段名	类型	是否为空	默认值	说明
+id	BIGINT	否	自增	主键 ID
+device_id	VARCHAR(64)	否	无	设备 ID
+level	VARCHAR(16)	否	无	级别（INFO / WARNING / CRITICAL）
+reason	VARCHAR(512)	否	无	告警原因
+source	VARCHAR(32)	否	AI_AGENT	来源（RULE / AI_AGENT）
+ai_log_id	BIGINT	是	无	关联的 AI 分析日志 ID
+status	TINYINT	否	0	状态（0未处理 1已处理 2已忽略）
+created_at	DATETIME	否	当前时间	创建时间
+handled_at	DATETIME	是	无	处理时间
+handled_by	VARCHAR(64)	是	无	处理人
+索引：
 
-### 表 13：alert_record（告警记录表）★ v1.6 新增
+idx_device_time（device_id + created_at）：按设备 + 时间查询
 
-| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
-|--------|------|----------|--------|------|
-| id | BIGINT | 否 | 自增 | 主键 ID |
-| device_id | VARCHAR(64) | 否 | 无 | 设备 ID |
-| level | VARCHAR(16) | 否 | 无 | 级别（INFO / WARNING / CRITICAL） |
-| reason | VARCHAR(512) | 否 | 无 | 告警原因 |
-| source | VARCHAR(32) | 否 | AI_AGENT | 来源（RULE / AI_AGENT） |
-| ai_log_id | BIGINT | 是 | 无 | 关联的 AI 分析日志 ID |
-| status | TINYINT | 否 | 0 | 状态（0未处理 1已处理 2已忽略） |
-| created_at | DATETIME | 否 | 当前时间 | 创建时间 |
-| handled_at | DATETIME | 是 | 无 | 处理时间 |
-| handled_by | VARCHAR(64) | 是 | 无 | 处理人 |
+idx_status（status）：按状态查询（如"未处理告警"）
 
-**索引**：
-- `idx_device_time`（device_id + created_at）：按设备 + 时间查询
-- `idx_status`（status）：按状态查询（如"未处理告警"）
-- `idx_level`（level）：按级别查询
+idx_level（level）：按级别查询
 
-**说明**：
-- `source` 区分告警来源（纯规则 / AI Agent），便于后续对比
-- `ai_log_id` 关联 `ai_analysis_log`，可追溯 AI 分析过程
-- `status` 支持告警处理流转（未处理 → 已处理 → 已忽略）
+说明：
 
-**去重机制**：
-- 写入前，Redis SETNX 检查 `ai:agent:dedup:{deviceId}:{ruleName}`，TTL 5 分钟
-- 5 分钟内同一设备同一规则只写一条告警（见 BUG_LOG 问题 83）
+source 区分告警来源（纯规则 / AI Agent），便于后续对比
+
+ai_log_id 关联 ai_analysis_log，可追溯 AI 分析过程
+
+status 支持告警处理流转（未处理 → 已处理 → 已忽略）
+
+去重机制：
+
+写入前，Redis SETNX 检查 ai:agent:dedup:{deviceId}:{ruleName}，TTL 5 分钟
+
+5 分钟内同一设备同一规则只写一条告警（见 BUG_LOG 问题 83）
 
 三、表关系说明
 RBAC 关系
@@ -322,6 +315,7 @@ TDengine 存时序数据（超级表 telemetry，按设备建子表），旁路�
 两边数据一致（100 台设备持续压测：100% 一致）。
 
 AI Agent 关系
+text
 ai_analysis_log ←→ alert_record
 (1)                (N)
 一条 AI 分析日志可以关联多条告警记录（同一设备可能触发多级告警）。
@@ -347,7 +341,6 @@ MQTT 遥测 → MySQL + TDengine 双写
    写 ai_analysis_log
          ↓
    CRITICAL 级别 → 写 alert_record + 发 ai.alert.queue
-
 四、通用字段规范
 所有业务表统一包含以下字段：
 
@@ -543,7 +536,6 @@ CREATE TABLE mqtt_message_log (
     KEY idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MQTT消息处理日志表';
 
-
 -- ============================================
 -- v1.6 新增：AI Agent 相关表
 -- ============================================
@@ -579,11 +571,8 @@ CREATE TABLE alert_record (
     KEY idx_status (status),
     KEY idx_level (level)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='告警记录表';
-
-
 七、Nacos 配置数据库（nacos_config）
 Nacos 用独立的数据库 nacos_config 存配置，建表 SQL 见 docs/sql/nacos.sql。
-
 必须用官方完整版，否则会踩坑（见 BUG_LOG.md 问题 49-53）。
 
 关键表：
@@ -627,7 +616,6 @@ CREATE STABLE IF NOT EXISTS telemetry (
 
 自动建超表（v1.5 关键）
 清库（DROP DATABASE）后，超表也会被删。app 启动时必须自动建超表。
-
 TdengineWriteService.init() 里：
 
 java
@@ -652,8 +640,11 @@ TDengine 旁路：时序存储、时间范围查询，最终一致。
 写入优化：
 
 先显式建子表（ensureSubTables() + 内存缓存）
+
 再多子表合并 INSERT（一条 SQL 写多个子表），单批 8~10ms
+
 batchInsert() 里 INSERT 不带 USING
+
 为什么拆两步：TDengine 的 INSERT INTO 子表 USING 超表 TAGS(...) 隐式建表，一批涉及 1000 个首次写入的子表时会失败。拆成"显式建表 + 缓存 + 纯 INSERT"更稳定。
 
 九、数据库维护建议
@@ -690,14 +681,15 @@ reportTime 显式设置：不依赖 MyBatis-Plus 自动填充（只填充 MySQL 
 
 压测验证：100 台设备持续压测，两边数据 100% 一致。
 
-
 AI Agent 相关维护
+ai_analysis_log 会随 AI 分析次数增长，建议按月分区或定期归档
 
-- `ai_analysis_log` 会随 AI 分析次数增长，建议按月分区或定期归档
-- `alert_record.status` 定期清理已处理告警（如 90 天前）
-- `ai_analysis_log.tool_calls` 是 JSON 类型，查询时用 `JSON_EXTRACT`
-  ```sql
-  SELECT * FROM ai_analysis_log WHERE JSON_EXTRACT(tool_calls, '$[0].tool') = 'send_alert';
+alert_record.status 定期清理已处理告警（如 90 天前）
+
+ai_analysis_log.tool_calls 是 JSON 类型，查询时用 JSON_EXTRACT
+
+sql
+SELECT * FROM ai_analysis_log WHERE JSON_EXTRACT(tool_calls, '$[0].tool') = 'send_alert';
 数据对账（v1.6 AI Agent 验证）
 sql
 -- 规则分布
@@ -714,4 +706,5 @@ GROUP BY trigger_rule, analysis_result;
 SELECT 
   (SELECT COUNT(*) FROM ai_analysis_log) AS ai_total,
   (SELECT COUNT(*) FROM alert_record) AS alert_total;
--- ai_total(24) - alert_total(16) = 8（WARNING 级别）
+text
+```
